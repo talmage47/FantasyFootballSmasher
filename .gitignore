@@ -152,8 +152,7 @@ cython_debug/
 .DS_Store
 
 # Project-specific
+data/
 *.pkl
 *.parquet
 *.csv.gz
-data/raw/
-data/interim/
