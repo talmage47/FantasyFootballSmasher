@@ -5,6 +5,8 @@ DATA_DIR = REPO_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
 
+DEFAULT_SEASONS: list[int] = list(range(2016, 2026))
+
 
 def weekly_raw_path(season: int) -> Path:
     return RAW_DIR / "weekly" / f"{season}.parquet"
