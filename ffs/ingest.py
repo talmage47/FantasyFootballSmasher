@@ -63,3 +63,35 @@ def save_depth_charts(df: pd.DataFrame, season: int) -> None:
 
 def load_depth_charts(season: int) -> pd.DataFrame:
     return pd.read_parquet(config.depth_charts_path(season))
+
+
+def fetch_adp() -> pd.DataFrame:
+    """FantasyPros redraft-overall consensus rankings joined to gsis_id."""
+    import nflreadpy as nfl
+
+    rankings = nfl.load_ff_rankings().to_pandas()
+    ids = nfl.load_ff_playerids().to_pandas()
+
+    overall = (
+        rankings[rankings["page_type"] == "redraft-overall"][
+            ["id", "player", "pos", "team", "ecr", "sd", "best", "worst", "scrape_date"]
+        ]
+        .rename(columns={"id": "fantasypros_id", "ecr": "adp"})
+        .copy()
+    )
+    overall["fantasypros_id"] = overall["fantasypros_id"].astype(str)
+
+    id_map = ids[["fantasypros_id", "gsis_id"]].dropna(subset=["fantasypros_id"]).copy()
+    id_map["fantasypros_id"] = id_map["fantasypros_id"].astype(str)
+
+    merged = overall.merge(id_map, on="fantasypros_id", how="left")
+    return merged.rename(columns={"gsis_id": "player_id"})
+
+
+def save_adp(df: pd.DataFrame) -> None:
+    path = config.ensure_parent(config.adp_path())
+    df.to_parquet(path, index=False)
+
+
+def load_adp() -> pd.DataFrame:
+    return pd.read_parquet(config.adp_path())

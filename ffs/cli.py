@@ -67,6 +67,24 @@ def fetch_schedules_cmd(
         typer.echo(f"  → {len(df):,} games saved to {path}")
 
 
+@app.command("fetch-adp")
+def fetch_adp_cmd(
+    force: Annotated[bool, typer.Option("--force", help="Refetch even if adp.parquet exists")] = False,
+) -> None:
+    """Fetch FantasyPros consensus redraft rankings (ADP proxy)."""
+    path = config.adp_path()
+    if path.exists() and not force:
+        typer.echo(f"[skip] {path.name} already exists (use --force to refresh)")
+        return
+    typer.echo("Fetching FantasyPros redraft-overall + player id map…")
+    df = ingest.fetch_adp()
+    ingest.save_adp(df)
+    matched = df["player_id"].notna().sum()
+    typer.echo(
+        f"  → {len(df):,} ranked players ({matched:,} joined to gsis_id) saved to {path}"
+    )
+
+
 @app.command("fetch-depth-charts")
 def fetch_depth_charts_cmd(
     seasons: Annotated[list[int] | None, typer.Option("--season", "-s")] = None,
@@ -394,8 +412,17 @@ def draft_cmd(
         depth_charts_df=depth_charts_df,
     )
     board = draft.draft_rankings(season_proj, teams=teams)
-    cols = ["overall_rank", "player_display_name", "position", "team",
-            "pos_rank", "projected_points", "vbd", "replacement_pts"]
+    if config.adp_path().exists():
+        board = draft.with_adp(board, ingest.load_adp())
+        cols = ["overall_rank", "player_display_name", "position", "team",
+                "pos_rank", "projected_points", "vbd", "adp", "adp_delta"]
+    else:
+        typer.echo(
+            "[warn] no adp.parquet on disk; skipping market comparison. "
+            "Run `ffs fetch-adp` to enable."
+        )
+        cols = ["overall_rank", "player_display_name", "position", "team",
+                "pos_rank", "projected_points", "vbd", "replacement_pts"]
     typer.echo(
         f"Draft board — {season}, {teams}-team league "
         f"(1QB / 2RB / 2WR / 1TE / 1FLEX)"

@@ -58,3 +58,14 @@ def draft_rankings(
     )
     ranked["overall_rank"] = ranked.index + 1
     return ranked
+
+
+def with_adp(rankings: pd.DataFrame, adp: pd.DataFrame) -> pd.DataFrame:
+    """Attach market ADP and compute adp_delta (positive = market drafts later than we do)."""
+    adp_slim = (
+        adp.dropna(subset=["player_id"])[["player_id", "adp", "sd", "best", "worst"]]
+        .drop_duplicates("player_id")
+    )
+    merged = rankings.merge(adp_slim, on="player_id", how="left")
+    merged["adp_delta"] = merged["adp"] - merged["overall_rank"]
+    return merged

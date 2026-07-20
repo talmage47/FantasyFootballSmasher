@@ -24,6 +24,10 @@ def depth_charts_path(season: int) -> Path:
     return RAW_DIR / "depth_charts" / f"{season}.parquet"
 
 
+def adp_path() -> Path:
+    return RAW_DIR / "adp.parquet"
+
+
 def weekly_scored_path(season: int, scoring_name: str) -> Path:
     return PROCESSED_DIR / "weekly" / scoring_name / f"{season}.parquet"
 
