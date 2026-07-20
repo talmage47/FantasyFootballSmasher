@@ -4,8 +4,10 @@ from typing import Annotated
 
 import typer
 
+from pathlib import Path
+
 from ffs import career as career_mod
-from ffs import config, draft, ingest, matchups, projections, scoring, sos
+from ffs import config, draft, ingest, lineup, matchups, projections, scoring, sos
 
 app = typer.Typer(help="Fantasy Football Smasher", no_args_is_help=True)
 
@@ -399,6 +401,55 @@ def draft_cmd(
         f"(1QB / 2RB / 2WR / 1TE / 1FLEX)"
     )
     typer.echo(board[cols].head(top).to_string(index=False))
+
+
+@app.command("lineup")
+def lineup_cmd(
+    season: Annotated[int, typer.Option("--season", "-s")],
+    week: Annotated[int, typer.Option("--week", "-w")],
+    roster: Annotated[
+        Path, typer.Option("--roster", help="File with one player name per line")
+    ],
+    window: Annotated[int, typer.Option("--window")] = 8,
+    ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
+) -> None:
+    """Compute the optimal starting lineup for a given week from your roster."""
+    if not roster.exists():
+        raise typer.BadParameter(f"Roster file not found: {roster}")
+    names = [line.strip() for line in roster.read_text().splitlines() if line.strip()]
+    if not names:
+        raise typer.BadParameter("Empty roster file")
+
+    scored, schedule, rosters_df, depth_charts_df = _load_projection_inputs(
+        season, ruleset
+    )
+    proj = projections.project_week(
+        scored,
+        schedule,
+        target_season=season,
+        target_week=week,
+        window=window,
+        rosters_df=rosters_df,
+        depth_charts_df=depth_charts_df,
+    )
+
+    matched, unmatched = lineup.resolve_roster(proj, names)
+    if unmatched:
+        typer.echo(f"[warn] Not projected (backups, byes, or unknown): {'; '.join(unmatched)}")
+    if matched.empty:
+        raise typer.Exit(1)
+
+    starters, bench = lineup.optimize_lineup(matched)
+    total = starters["projection"].sum()
+    typer.echo(
+        f"\nOptimal lineup — {season} week {week} (projected total: {total:.1f} pts)"
+    )
+    starter_cols = ["slot", "player_display_name", "position", "team", "opponent", "projection"]
+    typer.echo(starters[starter_cols].to_string(index=False))
+    if not bench.empty:
+        bench_cols = ["player_display_name", "position", "team", "opponent", "projection"]
+        typer.echo("\nBench:")
+        typer.echo(bench[bench_cols].to_string(index=False))
 
 
 if __name__ == "__main__":
