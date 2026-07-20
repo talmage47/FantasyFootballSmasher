@@ -37,6 +37,40 @@ def player_baseline(
     )
 
 
+DEFAULT_DEPTH_LIMITS: dict[str, int] = {"QB": 1, "RB": 3, "WR": 4, "TE": 2}
+
+
+def latest_depth_chart(depth_charts: pd.DataFrame) -> pd.DataFrame:
+    """Reduce a depth-chart snapshot table to the latest snapshot per player."""
+    dc = depth_charts.copy()
+    dc["dt"] = pd.to_datetime(dc["dt"])
+    latest_dt = dc["dt"].max()
+    return (
+        dc[dc["dt"] == latest_dt]
+        .sort_values("pos_rank")
+        .drop_duplicates("gsis_id", keep="first")
+    )
+
+
+def _apply_depth_filter(
+    baselines: pd.DataFrame,
+    depth_charts: pd.DataFrame,
+    limits: dict[str, int] = DEFAULT_DEPTH_LIMITS,
+) -> pd.DataFrame:
+    """Attach pos_rank from latest depth chart and drop players below position limits."""
+    latest = latest_depth_chart(depth_charts)
+    ranks = latest[["gsis_id", "pos_abb", "pos_rank"]].rename(
+        columns={"gsis_id": "player_id"}
+    )
+    merged = baselines.merge(ranks, on="player_id", how="left")
+    keep = pd.Series(False, index=merged.index)
+    for pos, max_rank in limits.items():
+        keep |= (merged["position"] == pos) & (merged["pos_rank"] <= max_rank)
+    # Preserve rows whose position isn't in the limits dict (defensive fallback).
+    keep |= ~merged["position"].isin(limits.keys())
+    return merged[keep].drop(columns=["pos_abb"])
+
+
 def _apply_current_teams(baselines: pd.DataFrame, rosters: pd.DataFrame) -> pd.DataFrame:
     """Override baseline `team` with the target-season roster team where available."""
     current = (
@@ -59,6 +93,8 @@ def project_week(
     positions: tuple[str, ...] = matchups.SKILL_POSITIONS,
     min_games: int = 3,
     rosters_df: pd.DataFrame | None = None,
+    depth_charts_df: pd.DataFrame | None = None,
+    depth_limits: dict[str, int] = DEFAULT_DEPTH_LIMITS,
 ) -> pd.DataFrame:
     """Project target_week fantasy points as baseline_ppg × opponent adjustment factor."""
     if rankings_season is None:
@@ -78,6 +114,8 @@ def project_week(
     ]
     if rosters_df is not None:
         baselines = _apply_current_teams(baselines, rosters_df)
+    if depth_charts_df is not None:
+        baselines = _apply_depth_filter(baselines, depth_charts_df, limits=depth_limits)
 
     target_games = schedule_df[
         (schedule_df["season"] == target_season) & (schedule_df["week"] == target_week)
@@ -128,6 +166,8 @@ def project_season(
     positions: tuple[str, ...] = matchups.SKILL_POSITIONS,
     min_games: int = 3,
     rosters_df: pd.DataFrame | None = None,
+    depth_charts_df: pd.DataFrame | None = None,
+    depth_limits: dict[str, int] = DEFAULT_DEPTH_LIMITS,
 ) -> pd.DataFrame:
     """Project a full regular season by summing opponent-adjusted weekly projections."""
     if rankings_season is None:
@@ -145,6 +185,8 @@ def project_season(
     ]
     if rosters_df is not None:
         baselines = _apply_current_teams(baselines, rosters_df)
+    if depth_charts_df is not None:
+        baselines = _apply_depth_filter(baselines, depth_charts_df, limits=depth_limits)
 
     team_weeks = sos.opponents_by_team(schedule_df)
     team_weeks = team_weeks[team_weeks["season"] == target_season]

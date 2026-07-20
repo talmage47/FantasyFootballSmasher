@@ -48,3 +48,18 @@ def save_rosters(df: pd.DataFrame, season: int) -> None:
 
 def load_rosters(season: int) -> pd.DataFrame:
     return pd.read_parquet(config.rosters_path(season))
+
+
+def fetch_depth_charts(season: int) -> pd.DataFrame:
+    import nflreadpy as nfl
+
+    return nfl.load_depth_charts([season]).to_pandas()
+
+
+def save_depth_charts(df: pd.DataFrame, season: int) -> None:
+    path = config.ensure_parent(config.depth_charts_path(season))
+    df.to_parquet(path, index=False)
+
+
+def load_depth_charts(season: int) -> pd.DataFrame:
+    return pd.read_parquet(config.depth_charts_path(season))

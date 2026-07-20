@@ -65,6 +65,25 @@ def fetch_schedules_cmd(
         typer.echo(f"  → {len(df):,} games saved to {path}")
 
 
+@app.command("fetch-depth-charts")
+def fetch_depth_charts_cmd(
+    seasons: Annotated[list[int] | None, typer.Option("--season", "-s")] = None,
+    start: Annotated[int | None, typer.Option("--start")] = None,
+    end: Annotated[int | None, typer.Option("--end")] = None,
+    force: Annotated[bool, typer.Option("--force")] = False,
+) -> None:
+    """Download depth charts and save to Parquet."""
+    for season in _resolve_seasons(seasons, start, end):
+        path = config.depth_charts_path(season)
+        if path.exists() and not force:
+            typer.echo(f"[skip] {season}: {path.name} already exists")
+            continue
+        typer.echo(f"Fetching depth charts for {season}…")
+        df = ingest.fetch_depth_charts(season)
+        ingest.save_depth_charts(df, season)
+        typer.echo(f"  → {len(df):,} rows saved to {path}")
+
+
 @app.command("fetch-rosters")
 def fetch_rosters_cmd(
     seasons: Annotated[list[int] | None, typer.Option("--season", "-s")] = None,
@@ -267,16 +286,9 @@ def project(
     ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
 ) -> None:
     """Project fantasy points for a given week: baseline PPG × opponent adjustment."""
-    scored = career_mod.load_scored(ruleset=ruleset)
-    schedule = ingest.load_schedules(season)
-    rosters_df = (
-        ingest.load_rosters(season) if config.rosters_path(season).exists() else None
+    scored, schedule, rosters_df, depth_charts_df = _load_projection_inputs(
+        season, ruleset
     )
-    if rosters_df is None:
-        typer.echo(
-            f"[warn] no {season} roster on disk; team assignments will use "
-            f"last-played team. Run `ffs fetch-rosters --season {season}` to fix."
-        )
     positions = (
         (position.upper(),) if position else matchups.SKILL_POSITIONS
     )
@@ -289,6 +301,7 @@ def project(
         rankings_season=rankings_season,
         positions=positions,
         rosters_df=rosters_df,
+        depth_charts_df=depth_charts_df,
     )
     if position:
         result = result[result["position"] == position.upper()]
@@ -314,7 +327,17 @@ def _load_projection_inputs(season: int, ruleset: str):
             f"[warn] no {season} roster on disk; teams will use last-played team. "
             f"Run `ffs fetch-rosters --season {season}` to fix."
         )
-    return scored, schedule, rosters_df
+    depth_charts_df = (
+        ingest.load_depth_charts(season)
+        if config.depth_charts_path(season).exists()
+        else None
+    )
+    if depth_charts_df is None:
+        typer.echo(
+            f"[warn] no {season} depth charts on disk; backups will pollute projections. "
+            f"Run `ffs fetch-depth-charts --season {season}` to fix."
+        )
+    return scored, schedule, rosters_df, depth_charts_df
 
 
 @app.command("project-season")
@@ -327,7 +350,7 @@ def project_season_cmd(
     ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
 ) -> None:
     """Project full-season fantasy points per player."""
-    scored, schedule, rosters_df = _load_projection_inputs(season, ruleset)
+    scored, schedule, rosters_df, depth_charts_df = _load_projection_inputs(season, ruleset)
     positions = (position.upper(),) if position else matchups.SKILL_POSITIONS
     result = projections.project_season(
         scored,
@@ -337,6 +360,7 @@ def project_season_cmd(
         rankings_season=rankings_season,
         positions=positions,
         rosters_df=rosters_df,
+        depth_charts_df=depth_charts_df,
     )
     if position:
         result = result[result["position"] == position.upper()]
@@ -358,9 +382,14 @@ def draft_cmd(
     ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
 ) -> None:
     """VBD-ranked draft board for the given season and league size."""
-    scored, schedule, rosters_df = _load_projection_inputs(season, ruleset)
+    scored, schedule, rosters_df, depth_charts_df = _load_projection_inputs(season, ruleset)
     season_proj = projections.project_season(
-        scored, schedule, target_season=season, window=window, rosters_df=rosters_df
+        scored,
+        schedule,
+        target_season=season,
+        window=window,
+        rosters_df=rosters_df,
+        depth_charts_df=depth_charts_df,
     )
     board = draft.draft_rankings(season_proj, teams=teams)
     cols = ["overall_rank", "player_display_name", "position", "team",
