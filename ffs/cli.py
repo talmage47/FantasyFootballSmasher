@@ -5,7 +5,7 @@ from typing import Annotated
 import typer
 
 from ffs import career as career_mod
-from ffs import config, ingest, matchups, scoring
+from ffs import config, ingest, matchups, projections, scoring, sos
 
 app = typer.Typer(help="Fantasy Football Smasher", no_args_is_help=True)
 
@@ -206,6 +206,73 @@ def defense(
         f"Defenses vs {position.upper()} — {season} ({label}), sorted {sort} first:"
     )
     typer.echo(ranked.to_string(index=False))
+
+
+@app.command("sos")
+def sos_cmd(
+    schedule_season: Annotated[int, typer.Option("--schedule-season", help="Season whose schedule to analyze")],
+    position: Annotated[str, typer.Option("--position", "-p")],
+    rankings_season: Annotated[
+        int | None,
+        typer.Option("--rankings-season", help="Season whose defense to use (default: schedule-season - 1)"),
+    ] = None,
+    start_week: Annotated[int | None, typer.Option("--start-week")] = None,
+    end_week: Annotated[int | None, typer.Option("--end-week")] = None,
+    ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
+) -> None:
+    """Strength of schedule per team vs a given position."""
+    if position.upper() not in matchups.SKILL_POSITIONS:
+        raise typer.BadParameter(f"position must be one of {matchups.SKILL_POSITIONS}")
+    r_season = rankings_season if rankings_season is not None else schedule_season - 1
+    schedule = ingest.load_schedules(schedule_season)
+    scored = career_mod.load_scored([r_season], ruleset=ruleset)
+    weeks = (start_week, end_week) if start_week and end_week else None
+    result = sos.team_sos(
+        schedule, scored, position=position.upper(), ranking_season=r_season, weeks=weeks
+    )
+    label = f"weeks {start_week}-{end_week}" if weeks else "full season"
+    typer.echo(
+        f"SoS for {schedule_season} vs {position.upper()} using {r_season} defenses ({label})"
+    )
+    typer.echo(result.to_string(index=False))
+
+
+@app.command()
+def project(
+    season: Annotated[int, typer.Option("--season", "-s")],
+    week: Annotated[int, typer.Option("--week", "-w")],
+    position: Annotated[str | None, typer.Option("--position", "-p")] = None,
+    window: Annotated[int, typer.Option("--window", help="Baseline: last N games")] = 8,
+    rankings_season: Annotated[int | None, typer.Option("--rankings-season")] = None,
+    top: Annotated[int, typer.Option("--top")] = 25,
+    ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
+) -> None:
+    """Project fantasy points for a given week: baseline PPG × opponent adjustment."""
+    scored = career_mod.load_scored(ruleset=ruleset)
+    schedule = ingest.load_schedules(season)
+    positions = (
+        (position.upper(),) if position else matchups.SKILL_POSITIONS
+    )
+    result = projections.project_week(
+        scored,
+        schedule,
+        target_season=season,
+        target_week=week,
+        window=window,
+        rankings_season=rankings_season,
+        positions=positions,
+    )
+    if position:
+        result = result[result["position"] == position.upper()]
+    cols = [
+        "player_display_name", "position", "team", "opponent",
+        "baseline_ppg", "opp_factor", "projection",
+    ]
+    typer.echo(
+        f"Projections — {season} week {week} (window={window})"
+        + (f" [{position.upper()}]" if position else "")
+    )
+    typer.echo(result[cols].head(top).to_string(index=False))
 
 
 if __name__ == "__main__":
