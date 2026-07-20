@@ -46,6 +46,40 @@ def fetch(
         typer.echo(f"  → {len(df):,} rows saved to {path}")
 
 
+@app.command("fetch-schedules")
+def fetch_schedules_cmd(
+    seasons: Annotated[list[int] | None, typer.Option("--season", "-s")] = None,
+    start: Annotated[int | None, typer.Option("--start")] = None,
+    end: Annotated[int | None, typer.Option("--end")] = None,
+    force: Annotated[bool, typer.Option("--force")] = False,
+) -> None:
+    """Download NFL schedules and save to Parquet."""
+    for season in _resolve_seasons(seasons, start, end):
+        path = config.schedules_path(season)
+        if path.exists() and not force:
+            typer.echo(f"[skip] {season}: {path.name} already exists")
+            continue
+        typer.echo(f"Fetching schedule for {season}…")
+        df = ingest.fetch_schedules(season)
+        ingest.save_schedules(df, season)
+        typer.echo(f"  → {len(df):,} games saved to {path}")
+
+
+@app.command()
+def schedule(
+    season: Annotated[int, typer.Option("--season", "-s")],
+    week: Annotated[int | None, typer.Option("--week", "-w")] = None,
+) -> None:
+    """Print matchups for a season (optionally a single week)."""
+    df = ingest.load_schedules(season)
+    if week is not None:
+        df = df[df["week"] == week]
+    cols = [c for c in ("week", "gameday", "away_team", "home_team",
+                        "away_score", "home_score", "spread_line", "total_line")
+            if c in df.columns]
+    typer.echo(df[cols].sort_values(["week", "gameday"]).to_string(index=False))
+
+
 @app.command()
 def score(
     seasons: Annotated[

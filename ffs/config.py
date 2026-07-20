@@ -12,6 +12,10 @@ def weekly_raw_path(season: int) -> Path:
     return RAW_DIR / "weekly" / f"{season}.parquet"
 
 
+def schedules_path(season: int) -> Path:
+    return RAW_DIR / "schedules" / f"{season}.parquet"
+
+
 def weekly_scored_path(season: int, scoring_name: str) -> Path:
     return PROCESSED_DIR / "weekly" / scoring_name / f"{season}.parquet"
 
