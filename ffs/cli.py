@@ -65,6 +65,25 @@ def fetch_schedules_cmd(
         typer.echo(f"  → {len(df):,} games saved to {path}")
 
 
+@app.command("fetch-rosters")
+def fetch_rosters_cmd(
+    seasons: Annotated[list[int] | None, typer.Option("--season", "-s")] = None,
+    start: Annotated[int | None, typer.Option("--start")] = None,
+    end: Annotated[int | None, typer.Option("--end")] = None,
+    force: Annotated[bool, typer.Option("--force")] = False,
+) -> None:
+    """Download annual rosters and save to Parquet."""
+    for season in _resolve_seasons(seasons, start, end):
+        path = config.rosters_path(season)
+        if path.exists() and not force:
+            typer.echo(f"[skip] {season}: {path.name} already exists")
+            continue
+        typer.echo(f"Fetching roster for {season}…")
+        df = ingest.fetch_rosters(season)
+        ingest.save_rosters(df, season)
+        typer.echo(f"  → {len(df):,} players saved to {path}")
+
+
 @app.command()
 def schedule(
     season: Annotated[int, typer.Option("--season", "-s")],
@@ -250,6 +269,14 @@ def project(
     """Project fantasy points for a given week: baseline PPG × opponent adjustment."""
     scored = career_mod.load_scored(ruleset=ruleset)
     schedule = ingest.load_schedules(season)
+    rosters_df = (
+        ingest.load_rosters(season) if config.rosters_path(season).exists() else None
+    )
+    if rosters_df is None:
+        typer.echo(
+            f"[warn] no {season} roster on disk; team assignments will use "
+            f"last-played team. Run `ffs fetch-rosters --season {season}` to fix."
+        )
     positions = (
         (position.upper(),) if position else matchups.SKILL_POSITIONS
     )
@@ -261,6 +288,7 @@ def project(
         window=window,
         rankings_season=rankings_season,
         positions=positions,
+        rosters_df=rosters_df,
     )
     if position:
         result = result[result["position"] == position.upper()]

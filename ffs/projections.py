@@ -37,6 +37,18 @@ def player_baseline(
     )
 
 
+def _apply_current_teams(baselines: pd.DataFrame, rosters: pd.DataFrame) -> pd.DataFrame:
+    """Override baseline `team` with the target-season roster team where available."""
+    current = (
+        rosters[["gsis_id", "team"]]
+        .drop_duplicates("gsis_id")
+        .rename(columns={"gsis_id": "player_id", "team": "current_team"})
+    )
+    merged = baselines.merge(current, on="player_id", how="left")
+    merged["team"] = merged["current_team"].fillna(merged["team"])
+    return merged.drop(columns=["current_team"])
+
+
 def project_week(
     scored_df: pd.DataFrame,
     schedule_df: pd.DataFrame,
@@ -46,6 +58,7 @@ def project_week(
     rankings_season: int | None = None,
     positions: tuple[str, ...] = matchups.SKILL_POSITIONS,
     min_games: int = 3,
+    rosters_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Project target_week fantasy points as baseline_ppg × opponent adjustment factor."""
     if rankings_season is None:
@@ -63,6 +76,8 @@ def project_week(
         baselines["position"].isin(positions)
         & (baselines["games_in_window"] >= min_games)
     ]
+    if rosters_df is not None:
+        baselines = _apply_current_teams(baselines, rosters_df)
 
     target_games = schedule_df[
         (schedule_df["season"] == target_season) & (schedule_df["week"] == target_week)
