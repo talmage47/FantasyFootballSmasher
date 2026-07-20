@@ -5,7 +5,7 @@ from typing import Annotated
 import typer
 
 from ffs import career as career_mod
-from ffs import config, ingest, scoring
+from ffs import config, ingest, matchups, scoring
 
 app = typer.Typer(help="Fantasy Football Smasher", no_args_is_help=True)
 
@@ -176,6 +176,36 @@ def rolling(
     cols = ["season", "week", "career_game", "fantasy_points_ffs", "fp_roll"]
     typer.echo(f"{unique_ids.iloc[0]['player_display_name']} — rolling {window}-game avg")
     typer.echo(rolled[cols].to_string(index=False))
+
+
+@app.command()
+def defense(
+    season: Annotated[int, typer.Option("--season", "-s")],
+    position: Annotated[str, typer.Option("--position", "-p")],
+    last_n_weeks: Annotated[
+        int | None, typer.Option("--last-n", help="Only aggregate over the last N weeks")
+    ] = None,
+    sort: Annotated[str, typer.Option("--sort", help="easiest | hardest")] = "easiest",
+    ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
+) -> None:
+    """Rank defenses by fantasy points allowed to `position`."""
+    if position.upper() not in matchups.SKILL_POSITIONS:
+        raise typer.BadParameter(
+            f"position must be one of {matchups.SKILL_POSITIONS}, got {position!r}"
+        )
+    scored = career_mod.load_scored([season], ruleset=ruleset)
+    ranked = matchups.defense_ranking(
+        scored, season=season, position=position.upper(), last_n_weeks=last_n_weeks
+    )
+    if sort == "hardest":
+        ranked = ranked.iloc[::-1].reset_index(drop=True)
+    elif sort != "easiest":
+        raise typer.BadParameter("--sort must be 'easiest' or 'hardest'")
+    label = f"last {last_n_weeks} weeks" if last_n_weeks else "full season"
+    typer.echo(
+        f"Defenses vs {position.upper()} — {season} ({label}), sorted {sort} first:"
+    )
+    typer.echo(ranked.to_string(index=False))
 
 
 if __name__ == "__main__":
