@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from ffs import matchups
+from ffs import matchups, sos
 
 
 def player_baseline(
@@ -117,3 +117,71 @@ def project_week(
 
     result = pd.concat(frames, ignore_index=True).dropna(subset=["projection"])
     return result.sort_values("projection", ascending=False).reset_index(drop=True)
+
+
+def project_season(
+    scored_df: pd.DataFrame,
+    schedule_df: pd.DataFrame,
+    target_season: int,
+    window: int = 17,
+    rankings_season: int | None = None,
+    positions: tuple[str, ...] = matchups.SKILL_POSITIONS,
+    min_games: int = 3,
+    rosters_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Project a full regular season by summing opponent-adjusted weekly projections."""
+    if rankings_season is None:
+        rankings_season = target_season - 1
+
+    baselines = player_baseline(
+        scored_df,
+        up_to=(target_season - 1, 99),
+        window=window,
+        min_season=target_season - 1,
+    )
+    baselines = baselines[
+        baselines["position"].isin(positions)
+        & (baselines["games_in_window"] >= min_games)
+    ]
+    if rosters_df is not None:
+        baselines = _apply_current_teams(baselines, rosters_df)
+
+    team_weeks = sos.opponents_by_team(schedule_df)
+    team_weeks = team_weeks[team_weeks["season"] == target_season]
+
+    frames = []
+    for pos in positions:
+        pos_baselines = baselines[baselines["position"] == pos]
+        if pos_baselines.empty:
+            continue
+        rankings = matchups.defense_ranking(
+            scored_df, season=rankings_season, position=pos
+        )
+        league_avg = rankings["fp_allowed_pg"].mean()
+        rankings = rankings.assign(opp_factor=rankings["fp_allowed_pg"] / league_avg)
+
+        joined = pos_baselines.merge(team_weeks, on="team", how="left").merge(
+            rankings[["defense", "opp_factor"]],
+            left_on="opponent",
+            right_on="defense",
+            how="left",
+        )
+        joined["week_projection"] = joined["baseline_ppg"] * joined["opp_factor"]
+        season_totals = (
+            joined.groupby(
+                ["player_id", "player_display_name", "position", "team"], dropna=False
+            )
+            .agg(
+                games=("week", "count"),
+                projected_points=("week_projection", "sum"),
+                avg_opp_factor=("opp_factor", "mean"),
+            )
+            .reset_index()
+        )
+        season_totals["ppg"] = (
+            season_totals["projected_points"] / season_totals["games"]
+        )
+        frames.append(season_totals)
+
+    result = pd.concat(frames, ignore_index=True).dropna(subset=["projected_points"])
+    return result.sort_values("projected_points", ascending=False).reset_index(drop=True)

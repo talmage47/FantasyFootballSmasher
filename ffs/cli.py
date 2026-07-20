@@ -5,7 +5,7 @@ from typing import Annotated
 import typer
 
 from ffs import career as career_mod
-from ffs import config, ingest, matchups, projections, scoring, sos
+from ffs import config, draft, ingest, matchups, projections, scoring, sos
 
 app = typer.Typer(help="Fantasy Football Smasher", no_args_is_help=True)
 
@@ -301,6 +301,75 @@ def project(
         + (f" [{position.upper()}]" if position else "")
     )
     typer.echo(result[cols].head(top).to_string(index=False))
+
+
+def _load_projection_inputs(season: int, ruleset: str):
+    scored = career_mod.load_scored(ruleset=ruleset)
+    schedule = ingest.load_schedules(season)
+    rosters_df = (
+        ingest.load_rosters(season) if config.rosters_path(season).exists() else None
+    )
+    if rosters_df is None:
+        typer.echo(
+            f"[warn] no {season} roster on disk; teams will use last-played team. "
+            f"Run `ffs fetch-rosters --season {season}` to fix."
+        )
+    return scored, schedule, rosters_df
+
+
+@app.command("project-season")
+def project_season_cmd(
+    season: Annotated[int, typer.Option("--season", "-s")],
+    position: Annotated[str | None, typer.Option("--position", "-p")] = None,
+    window: Annotated[int, typer.Option("--window", help="Baseline: last N games")] = 17,
+    rankings_season: Annotated[int | None, typer.Option("--rankings-season")] = None,
+    top: Annotated[int, typer.Option("--top")] = 40,
+    ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
+) -> None:
+    """Project full-season fantasy points per player."""
+    scored, schedule, rosters_df = _load_projection_inputs(season, ruleset)
+    positions = (position.upper(),) if position else matchups.SKILL_POSITIONS
+    result = projections.project_season(
+        scored,
+        schedule,
+        target_season=season,
+        window=window,
+        rankings_season=rankings_season,
+        positions=positions,
+        rosters_df=rosters_df,
+    )
+    if position:
+        result = result[result["position"] == position.upper()]
+    cols = ["player_display_name", "position", "team",
+            "games", "avg_opp_factor", "ppg", "projected_points"]
+    typer.echo(
+        f"Season projections — {season} (window={window})"
+        + (f" [{position.upper()}]" if position else "")
+    )
+    typer.echo(result[cols].head(top).to_string(index=False))
+
+
+@app.command("draft")
+def draft_cmd(
+    season: Annotated[int, typer.Option("--season", "-s")],
+    teams: Annotated[int, typer.Option("--teams", help="League size")] = 12,
+    window: Annotated[int, typer.Option("--window")] = 17,
+    top: Annotated[int, typer.Option("--top")] = 100,
+    ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
+) -> None:
+    """VBD-ranked draft board for the given season and league size."""
+    scored, schedule, rosters_df = _load_projection_inputs(season, ruleset)
+    season_proj = projections.project_season(
+        scored, schedule, target_season=season, window=window, rosters_df=rosters_df
+    )
+    board = draft.draft_rankings(season_proj, teams=teams)
+    cols = ["overall_rank", "player_display_name", "position", "team",
+            "pos_rank", "projected_points", "vbd", "replacement_pts"]
+    typer.echo(
+        f"Draft board — {season}, {teams}-team league "
+        f"(1QB / 2RB / 2WR / 1TE / 1FLEX)"
+    )
+    typer.echo(board[cols].head(top).to_string(index=False))
 
 
 if __name__ == "__main__":
