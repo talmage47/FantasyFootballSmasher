@@ -364,7 +364,6 @@ def _load_projection_inputs(season: int, ruleset: str):
 def project_season_cmd(
     season: Annotated[int, typer.Option("--season", "-s")],
     position: Annotated[str | None, typer.Option("--position", "-p")] = None,
-    window: Annotated[int, typer.Option("--window", help="Baseline: last N games")] = 17,
     rankings_season: Annotated[int | None, typer.Option("--rankings-season")] = None,
     top: Annotated[int, typer.Option("--top")] = 40,
     ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
@@ -376,7 +375,6 @@ def project_season_cmd(
         scored,
         schedule,
         target_season=season,
-        window=window,
         rankings_season=rankings_season,
         positions=positions,
         rosters_df=rosters_df,
@@ -387,7 +385,7 @@ def project_season_cmd(
     cols = ["player_display_name", "position", "team",
             "games", "avg_opp_factor", "ppg", "projected_points"]
     typer.echo(
-        f"Season projections — {season} (window={window})"
+        f"Season projections — {season}"
         + (f" [{position.upper()}]" if position else "")
     )
     typer.echo(result[cols].head(top).to_string(index=False))
@@ -397,7 +395,6 @@ def project_season_cmd(
 def draft_cmd(
     season: Annotated[int, typer.Option("--season", "-s")],
     teams: Annotated[int, typer.Option("--teams", help="League size")] = 12,
-    window: Annotated[int, typer.Option("--window")] = 17,
     top: Annotated[int, typer.Option("--top")] = 100,
     ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
 ) -> None:
@@ -407,7 +404,6 @@ def draft_cmd(
         scored,
         schedule,
         target_season=season,
-        window=window,
         rosters_df=rosters_df,
         depth_charts_df=depth_charts_df,
     )

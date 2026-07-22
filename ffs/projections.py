@@ -37,6 +37,82 @@ def player_baseline(
     )
 
 
+DEFAULT_SEASON_WEIGHTS: tuple[float, ...] = (0.60, 0.30, 0.10)
+
+
+def player_season_baseline(
+    scored_df: pd.DataFrame,
+    target_season: int,
+    weights: tuple[float, ...] = DEFAULT_SEASON_WEIGHTS,
+    min_recent_games: int = 3,
+    regular_season_only: bool = True,
+) -> pd.DataFrame:
+    """Weighted blend of per-season PPGs from the N seasons prior to `target_season`.
+
+    Weights are ordered most-recent-first and renormalized across the seasons each
+    player actually has. Players with fewer than `min_recent_games` in the most
+    recent prior season (target_season - 1) are dropped — this excludes retirees
+    and players whose most recent form is too thin to trust.
+    """
+    df = scored_df
+    if regular_season_only and "season_type" in df.columns:
+        df = df[df["season_type"] == "REG"]
+    n = len(weights)
+    seasons = list(range(target_season - n, target_season))
+    df = df[df["season"].isin(seasons)]
+
+    per_season = (
+        df.groupby(
+            ["player_id", "player_display_name", "position", "season"], dropna=False
+        )
+        .agg(
+            games=("week", "count"),
+            ppg=("fantasy_points_ffs", "mean"),
+            team=("team", "last"),
+        )
+        .reset_index()
+    )
+
+    weight_map = {season: w for season, w in zip(seasons[::-1], weights)}
+    per_season["weight"] = per_season["season"].map(weight_map)
+
+    most_recent = target_season - 1
+    qualifying = per_season[
+        (per_season["season"] == most_recent)
+        & (per_season["games"] >= min_recent_games)
+    ][["player_id"]].drop_duplicates()
+    per_season = per_season.merge(qualifying, on="player_id", how="inner")
+
+    per_season["weighted_ppg"] = per_season["ppg"] * per_season["weight"]
+    agg = (
+        per_season.groupby("player_id", dropna=False)
+        .agg(
+            weighted_sum=("weighted_ppg", "sum"),
+            weight_sum=("weight", "sum"),
+            games_in_window=("games", "sum"),
+        )
+        .reset_index()
+    )
+    agg["baseline_ppg"] = agg["weighted_sum"] / agg["weight_sum"]
+
+    latest = (
+        per_season.sort_values("season")
+        .groupby("player_id", as_index=False)
+        .tail(1)[["player_id", "player_display_name", "position", "team"]]
+    )
+    result = agg.merge(latest, on="player_id", how="left")
+    return result[
+        [
+            "player_id",
+            "player_display_name",
+            "position",
+            "team",
+            "baseline_ppg",
+            "games_in_window",
+        ]
+    ]
+
+
 DEFAULT_DEPTH_LIMITS: dict[str, int] = {"QB": 1, "RB": 3, "WR": 4, "TE": 2}
 
 
@@ -161,28 +237,30 @@ def project_season(
     scored_df: pd.DataFrame,
     schedule_df: pd.DataFrame,
     target_season: int,
-    window: int = 17,
+    season_weights: tuple[float, ...] = DEFAULT_SEASON_WEIGHTS,
     rankings_season: int | None = None,
     positions: tuple[str, ...] = matchups.SKILL_POSITIONS,
-    min_games: int = 3,
+    min_recent_games: int = 3,
     rosters_df: pd.DataFrame | None = None,
     depth_charts_df: pd.DataFrame | None = None,
     depth_limits: dict[str, int] = DEFAULT_DEPTH_LIMITS,
 ) -> pd.DataFrame:
-    """Project a full regular season by summing opponent-adjusted weekly projections."""
+    """Project a full regular season by summing opponent-adjusted weekly projections.
+
+    Baseline is a weighted blend across the last N seasons (see
+    `player_season_baseline`), which regresses one-off career years and rebounds
+    off-years toward a truer talent estimate.
+    """
     if rankings_season is None:
         rankings_season = target_season - 1
 
-    baselines = player_baseline(
+    baselines = player_season_baseline(
         scored_df,
-        up_to=(target_season - 1, 99),
-        window=window,
-        min_season=target_season - 1,
+        target_season=target_season,
+        weights=season_weights,
+        min_recent_games=min_recent_games,
     )
-    baselines = baselines[
-        baselines["position"].isin(positions)
-        & (baselines["games_in_window"] >= min_games)
-    ]
+    baselines = baselines[baselines["position"].isin(positions)]
     if rosters_df is not None:
         baselines = _apply_current_teams(baselines, rosters_df)
     if depth_charts_df is not None:
