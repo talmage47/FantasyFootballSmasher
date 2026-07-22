@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 DEFAULT_STARTERS: dict[str, int] = {"QB": 1, "RB": 2, "WR": 2, "TE": 1}
 DEFAULT_FLEX_POSITIONS: tuple[str, ...] = ("RB", "WR", "TE")
 DEFAULT_FLEX_STARTERS: int = 1
+ROOKIE_POSITIONS: tuple[str, ...] = ("QB", "RB", "WR", "TE")
 
 
 def replacement_ranks(
@@ -69,3 +71,73 @@ def with_adp(rankings: pd.DataFrame, adp: pd.DataFrame) -> pd.DataFrame:
     merged = rankings.merge(adp_slim, on="player_id", how="left")
     merged["adp_delta"] = merged["adp"] - merged["overall_rank"]
     return merged
+
+
+def with_rookies(
+    rankings: pd.DataFrame,
+    adp: pd.DataFrame,
+    positions: tuple[str, ...] = ROOKIE_POSITIONS,
+) -> pd.DataFrame:
+    """Add ADP entries with no `player_id` (typically rookies) using market-implied projections.
+
+    Rookies have no NFL games, so the model can't produce a baseline. We approximate
+    their projected points by interpolating between same-position, matched (veteran)
+    players on the (adp, projected_points) curve — i.e. "the market is drafting this
+    rookie roughly here, so treat him like other players drafted at that ADP".
+
+    Assumes `rankings` already has `adp` (from `with_adp`) and `replacement_pts`
+    (from `draft_rankings`). Recomputes `overall_rank`, `pos_rank`, and `adp_delta`
+    after insertion so rookies interleave correctly.
+    """
+    rookies_raw = adp[adp["player_id"].isna() & adp["pos"].isin(positions)]
+    if rookies_raw.empty:
+        rankings = rankings.copy()
+        rankings["is_rookie"] = False
+        return rankings
+
+    replacement = rankings.dropna(subset=["replacement_pts"]).groupby("position")[
+        "replacement_pts"
+    ].first().to_dict()
+
+    rookie_frames = []
+    for pos in positions:
+        pos_matched = (
+            rankings[(rankings["position"] == pos) & rankings["adp"].notna()]
+            .sort_values("adp")
+        )
+        if pos_matched.empty:
+            continue
+        pos_rookies = rookies_raw[rookies_raw["pos"] == pos].copy()
+        if pos_rookies.empty:
+            continue
+        replacement_pts = replacement.get(pos, pos_matched["projected_points"].min())
+        pos_rookies["projected_points"] = np.interp(
+            pos_rookies["adp"].to_numpy(dtype=float),
+            pos_matched["adp"].to_numpy(dtype=float),
+            pos_matched["projected_points"].to_numpy(dtype=float),
+            right=replacement_pts,
+        )
+        rookie_frames.append(pos_rookies)
+
+    rankings = rankings.copy()
+    rankings["is_rookie"] = False
+    if not rookie_frames:
+        return rankings
+
+    rookies = pd.concat(rookie_frames, ignore_index=True).rename(
+        columns={"player": "player_display_name", "pos": "position"}
+    )
+    rookies["is_rookie"] = True
+    rookies["replacement_pts"] = rookies["position"].map(replacement)
+    rookies["vbd"] = rookies["projected_points"] - rookies["replacement_pts"]
+
+    combined = pd.concat([rankings, rookies], ignore_index=True, sort=False)
+    combined = combined.sort_values("vbd", ascending=False).reset_index(drop=True)
+    combined["overall_rank"] = combined.index + 1
+    combined["pos_rank"] = (
+        combined.groupby("position")["projected_points"]
+        .rank(ascending=False, method="min")
+        .astype(int)
+    )
+    combined["adp_delta"] = combined["adp"] - combined["overall_rank"]
+    return combined

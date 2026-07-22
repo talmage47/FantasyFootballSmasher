@@ -10,7 +10,8 @@
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('latest:', d['info']['version']\\); print\\('summary:', d['info']['summary']\\)\")",
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('requires_python:', d['info']['requires_python']\\); print\\('deps:', d['info']['requires_dist']\\)\")",
       "Bash(curl -s https://raw.githubusercontent.com/nflverse/nflreadpy/main/README.md)",
-      "Bash(uv run *)"
+      "Bash(uv run *)",
+      "Bash(awk -F ' ' '{ if \\($1 <= 180\\) print }')"
     ]
   }
 }

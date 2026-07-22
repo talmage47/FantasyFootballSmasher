@@ -409,9 +409,11 @@ def draft_cmd(
     )
     board = draft.draft_rankings(season_proj, teams=teams)
     if config.adp_path().exists():
-        board = draft.with_adp(board, ingest.load_adp())
+        adp = ingest.load_adp()
+        board = draft.with_adp(board, adp)
+        board = draft.with_rookies(board, adp)
         cols = ["overall_rank", "player_display_name", "position", "team",
-                "pos_rank", "projected_points", "vbd", "adp", "adp_delta"]
+                "pos_rank", "projected_points", "vbd", "adp", "adp_delta", "is_rookie"]
     else:
         typer.echo(
             "[warn] no adp.parquet on disk; skipping market comparison. "

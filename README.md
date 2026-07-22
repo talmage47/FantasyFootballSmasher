@@ -33,12 +33,14 @@ produces draft boards and weekly lineup recommendations. Designed for a
   position, ranked and league-relative.
 - `sos` — strength of schedule per team, using any season's schedule
   and any (prior) season's defensive rankings.
-- `projections` — baseline (rolling last-N-game PPG per player) × opponent
-  adjustment; weekly and full-season variants; recency filter to exclude
-  retired players; roster override to fix offseason moves; depth chart
-  filter to exclude backups.
+- `projections` — baselines × opponent adjustment. Per-week projections use
+  a rolling last-N-game PPG (recent form); season projections use a weighted
+  blend of the last 3 seasons (60/30/10, most recent first) so career-year
+  outliers regress. Roster override for offseason moves; depth chart filter
+  to exclude backups; recency filter to drop retired players.
 - `draft` — value-based drafting (VBD) with configurable league size,
-  optionally enriched with market ADP so you can spot values vs reaches.
+  optionally enriched with market ADP so you can spot values vs reaches, and
+  rookies interpolated in from the ADP file when a `gsis_id` can't be joined.
 - `lineup` — greedy optimal starter selection from a roster of player
   names, given weekly projections.
 
@@ -223,8 +225,11 @@ scoring format is a new dict, not a new class hierarchy.
 
 - **No K / DST projections yet** — scoring rules and depth filter both
   skip them. Lineups and draft boards only cover QB/RB/WR/TE.
-- **Rookies have no projection** — they need at least one game to enter
-  the baseline. Merging a FantasyPros rookie source is on the roadmap.
+- **Rookie projections are market-derived, not model-derived** — rookies
+  have no NFL games so the baseline can't produce anything. `draft` merges
+  unmatched FantasyPros entries and interpolates projected points from
+  same-position veterans on the `(adp, projected_points)` curve. Rookies
+  are flagged in the `is_rookie` column.
 - **No opportunity model** — a player's baseline is their historical
   PPG, not a snap-share × team-context estimate. A backup who inherits
   a starting role won't have his projection change until games happen.
