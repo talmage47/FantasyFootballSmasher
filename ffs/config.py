@@ -44,6 +44,14 @@ def dst_scored_path(season: int, scoring_name: str) -> Path:
     return PROCESSED_DIR / "dst" / scoring_name / f"{season}.parquet"
 
 
+def sleeper_league_dir(league_id: str) -> Path:
+    return RAW_DIR / "sleeper" / league_id
+
+
+def sleeper_players_path() -> Path:
+    return RAW_DIR / "sleeper" / "players.json"
+
+
 def ensure_parent(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     return path

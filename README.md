@@ -125,6 +125,7 @@ Every command supports `--help` for full options.
 | `ffs fetch-rosters ...` | Annual rosters. |
 | `ffs fetch-depth-charts ...` | Depth charts (all snapshots preserved). |
 | `ffs fetch-adp [--force]` | FantasyPros redraft-overall ECR, no season needed. |
+| `ffs fetch-sleeper-league --league-id ID [--username NAME]` | Cache Sleeper league snapshot (settings, rosters, users, players map). Optionally preview one user's roster. |
 
 ### Scoring / views
 
@@ -150,7 +151,7 @@ Every command supports `--help` for full options.
 | `ffs project --season Y --week W [--position P] [--window 8] [--top 25]` | Per-week projections: baseline PPG × opponent adjustment. |
 | `ffs project-season --season Y [--position P] [--window 17] [--top 40]` | Full-season projections (sums weekly projections). |
 | `ffs draft --season Y [--teams 12] [--top 100] [--position P] [--after-pick N] [--sleepers \| --reaches] [--exclude-out]` | VBD-ranked draft board across all positions, enriched with ADP if `adp.parquet` is present. Includes a `tier` column (per-position VBD-gap clusters). `--after-pick`, `--sleepers`, `--reaches` require ADP. `--exclude-out` drops currently-Out players. |
-| `ffs lineup --season Y --week W --roster ROSTER.txt [--window 8]` | Optimal starting lineup from a text file of player names. |
+| `ffs lineup --season Y --week W (--roster ROSTER.txt \| --league-id ID --username NAME) [--window 8]` | Optimal starting lineup. Roster comes from a text file OR a cached Sleeper league snapshot. |
 
 ## Typical workflows
 
@@ -261,8 +262,12 @@ scoring format is a new dict, not a new class hierarchy.
   PPG, not a snap-share × team-context estimate. A backup who inherits
   a starting role won't have his projection change until games happen.
 - **No variance / floor-ceiling** — projections are point estimates.
-- **No league integration yet** — rosters come from a text file, not
-  ESPN/Sleeper.
+- **Sleeper integration is read-only and roster-only** — `ffs
+  fetch-sleeper-league` caches league settings, rosters, users, and
+  the player map; `ffs lineup` can then use `--league-id ID --username
+  NAME` instead of a roster text file. League scoring rules and
+  starting-slot config are NOT yet auto-imported — defaults still
+  apply (standard scoring, 1QB/2RB/2WR/1TE/1FLEX/K/DST).
 - **Some model outliers to investigate** before treating the draft
   board as gospel — see the `adp_delta` column and the notes in the
   project memory.

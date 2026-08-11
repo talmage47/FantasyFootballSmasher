@@ -9,7 +9,7 @@ from pathlib import Path
 from ffs import career as career_mod
 from ffs import (
     config, draft, dst, ingest, injuries as injuries_mod,
-    lineup, matchups, projections, scoring, sos,
+    lineup, matchups, projections, scoring, sleeper, sos,
 )
 
 app = typer.Typer(help="Fantasy Football Smasher", no_args_is_help=True)
@@ -105,6 +105,43 @@ def fetch_depth_charts_cmd(
         df = ingest.fetch_depth_charts(season)
         ingest.save_depth_charts(df, season)
         typer.echo(f"  → {len(df):,} rows saved to {path}")
+
+
+@app.command("fetch-sleeper-league")
+def fetch_sleeper_league_cmd(
+    league_id: Annotated[str, typer.Option("--league-id", help="Sleeper league ID")],
+    username: Annotated[
+        str | None,
+        typer.Option("--username", help="Print roster preview for this Sleeper display name"),
+    ] = None,
+    force_players: Annotated[
+        bool,
+        typer.Option("--force-players", help="Refresh the players.json cache even if fresh"),
+    ] = False,
+) -> None:
+    """Cache a Sleeper league snapshot (settings, rosters, users, player map)."""
+    typer.echo(f"Fetching Sleeper league {league_id}…")
+    league = sleeper.fetch_league(league_id)
+    rosters = sleeper.fetch_rosters(league_id)
+    users = sleeper.fetch_users(league_id)
+    out = sleeper.save_league_snapshot(league_id, league, rosters, users)
+    typer.echo(
+        f"  → league '{league.get('name')}' "
+        f"({league.get('total_rosters')} teams, "
+        f"{league.get('season')} {league.get('season_type')}) saved to {out}"
+    )
+    typer.echo("Refreshing Sleeper player map…")
+    players_map = sleeper.load_or_fetch_players(force=force_players)
+    typer.echo(f"  → {len(players_map):,} players cached at {config.sleeper_players_path()}")
+    if username is not None:
+        try:
+            user, ids = sleeper.user_roster(league_id, username)
+        except ValueError as e:
+            raise typer.BadParameter(str(e))
+        names = sleeper.resolve_player_names(ids, players_map)
+        typer.echo(f"\nRoster for {user.get('display_name')} ({len(ids)} players):")
+        for n in names:
+            typer.echo(f"  {n}")
 
 
 @app.command("fetch-injuries")
@@ -570,17 +607,49 @@ def lineup_cmd(
     season: Annotated[int, typer.Option("--season", "-s")],
     week: Annotated[int, typer.Option("--week", "-w")],
     roster: Annotated[
-        Path, typer.Option("--roster", help="File with one player name per line")
-    ],
+        Path | None, typer.Option("--roster", help="File with one player name per line")
+    ] = None,
+    league_id: Annotated[
+        str | None,
+        typer.Option("--league-id", help="Sleeper league ID (alternative to --roster)"),
+    ] = None,
+    username: Annotated[
+        str | None,
+        typer.Option("--username", help="Sleeper display name whose roster to load"),
+    ] = None,
     window: Annotated[int, typer.Option("--window")] = 8,
     ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
 ) -> None:
-    """Compute the optimal starting lineup for a given week from your roster."""
-    if not roster.exists():
-        raise typer.BadParameter(f"Roster file not found: {roster}")
-    names = [line.strip() for line in roster.read_text().splitlines() if line.strip()]
-    if not names:
-        raise typer.BadParameter("Empty roster file")
+    """Compute the optimal starting lineup from a roster (text file OR Sleeper league)."""
+    if roster is None and league_id is None:
+        raise typer.BadParameter("Provide either --roster FILE or --league-id ID (with --username)")
+    if roster is not None and league_id is not None:
+        raise typer.BadParameter("--roster and --league-id are mutually exclusive")
+
+    if roster is not None:
+        if not roster.exists():
+            raise typer.BadParameter(f"Roster file not found: {roster}")
+        names = [line.strip() for line in roster.read_text().splitlines() if line.strip()]
+        if not names:
+            raise typer.BadParameter("Empty roster file")
+    else:
+        if username is None:
+            raise typer.BadParameter("--league-id requires --username")
+        try:
+            user, ids = sleeper.user_roster(league_id, username)
+        except FileNotFoundError:
+            raise typer.BadParameter(
+                f"No cached Sleeper snapshot for league {league_id}. "
+                f"Run `ffs fetch-sleeper-league --league-id {league_id}` first."
+            )
+        except ValueError as e:
+            raise typer.BadParameter(str(e))
+        players_map = sleeper.load_or_fetch_players()
+        names = sleeper.resolve_player_names(ids, players_map)
+        typer.echo(
+            f"[sleeper] Loaded {len(names)} players for {user.get('display_name')} "
+            f"from league {league_id}"
+        )
 
     scored, schedule, rosters_df, depth_charts_df, injuries_df = _load_projection_inputs(
         season, ruleset
