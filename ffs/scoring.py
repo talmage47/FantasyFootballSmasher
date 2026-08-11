@@ -41,7 +41,21 @@ STANDARD = ScoringRules(
     },
 )
 
-RULESETS: dict[str, ScoringRules] = {STANDARD.name: STANDARD}
+HALF_PPR = ScoringRules(
+    name="half_ppr",
+    weights={**STANDARD.weights, "receptions": 0.5},
+)
+
+PPR = ScoringRules(
+    name="ppr",
+    weights={**STANDARD.weights, "receptions": 1.0},
+)
+
+RULESETS: dict[str, ScoringRules] = {
+    STANDARD.name: STANDARD,
+    HALF_PPR.name: HALF_PPR,
+    PPR.name: PPR,
+}
 
 
 def compute_fantasy_points(df: pd.DataFrame, rules: ScoringRules) -> pd.Series:

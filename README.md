@@ -150,8 +150,8 @@ Every command supports `--help` for full options.
 |---|---|
 | `ffs project --season Y --week W [--position P] [--window 8] [--top 25]` | Per-week projections: baseline PPG × opponent adjustment. |
 | `ffs project-season --season Y [--position P] [--window 17] [--top 40]` | Full-season projections (sums weekly projections). |
-| `ffs draft --season Y [--teams 12] [--top 100] [--position P] [--after-pick N] [--sleepers \| --reaches] [--exclude-out]` | VBD-ranked draft board across all positions, enriched with ADP if `adp.parquet` is present. Includes a `tier` column (per-position VBD-gap clusters). `--after-pick`, `--sleepers`, `--reaches` require ADP. `--exclude-out` drops currently-Out players. |
-| `ffs lineup --season Y --week W (--roster ROSTER.txt \| --league-id ID --username NAME) [--window 8]` | Optimal starting lineup. Roster comes from a text file OR a cached Sleeper league snapshot. |
+| `ffs draft --season Y [--teams 12] [--top 100] [--position P] [--after-pick N] [--sleepers \| --reaches] [--exclude-out] [--roster-slots ...] [--ruleset standard\|half_ppr\|ppr]` | VBD-ranked draft board across all positions, enriched with ADP if `adp.parquet` is present. Includes a `tier` column (per-position VBD-gap clusters). `--after-pick`, `--sleepers`, `--reaches` require ADP. `--exclude-out` drops currently-Out players. `--roster-slots QB=1,RB=2,WR=2,TE=1,FLEX=1,K=1,DST=1` overrides starters. `--ruleset` picks scoring rules. |
+| `ffs lineup --season Y --week W (--roster ROSTER.txt \| --league-id ID --username NAME) [--window 8] [--roster-slots ...] [--ruleset ...]` | Optimal starting lineup. Roster comes from a text file OR a cached Sleeper league snapshot. `--roster-slots` overrides starting slot mix. |
 
 ## Typical workflows
 

@@ -15,6 +15,24 @@ from ffs import (
 app = typer.Typer(help="Fantasy Football Smasher", no_args_is_help=True)
 
 
+def _parse_roster_slots(spec: str | None) -> dict[str, int] | None:
+    """Parse e.g. 'QB=1,RB=2,WR=2,TE=1,FLEX=1,K=1,DST=1' into a dict."""
+    if spec is None:
+        return None
+    slots: dict[str, int] = {}
+    for chunk in spec.split(","):
+        if "=" not in chunk:
+            raise typer.BadParameter(
+                f"Bad --roster-slots entry {chunk!r}; expected POS=N"
+            )
+        k, v = chunk.split("=", 1)
+        try:
+            slots[k.strip().upper()] = int(v)
+        except ValueError:
+            raise typer.BadParameter(f"Bad slot count in {chunk!r}")
+    return slots
+
+
 def _resolve_seasons(
     seasons: list[int] | None, start: int | None, end: int | None
 ) -> list[int]:
@@ -524,11 +542,26 @@ def draft_cmd(
     exclude_out: Annotated[
         bool, typer.Option("--exclude-out", help="Drop players currently designated Out")
     ] = False,
+    roster_slots: Annotated[
+        str | None,
+        typer.Option(
+            "--roster-slots",
+            help="Override starters, e.g. QB=1,RB=2,WR=2,TE=1,FLEX=1,K=1,DST=1",
+        ),
+    ] = None,
     ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
 ) -> None:
     """VBD-ranked draft board for the given season and league size."""
     if sleepers and reaches:
         raise typer.BadParameter("--sleepers and --reaches are mutually exclusive")
+
+    starters_spec = _parse_roster_slots(roster_slots)
+    if starters_spec is not None:
+        flex_starters = starters_spec.pop("FLEX", 0)
+        starters = starters_spec
+    else:
+        starters = draft.DEFAULT_STARTERS
+        flex_starters = draft.DEFAULT_FLEX_STARTERS
 
     scored, schedule, rosters_df, depth_charts_df, injuries_df = _load_projection_inputs(season, ruleset)
     season_proj = projections.project_season(
@@ -539,7 +572,9 @@ def draft_cmd(
         depth_charts_df=depth_charts_df,
         injuries_df=injuries_df,
     )
-    board = draft.draft_rankings(season_proj, teams=teams)
+    board = draft.draft_rankings(
+        season_proj, teams=teams, starters=starters, flex_starters=flex_starters
+    )
     has_adp = config.adp_path().exists()
     if has_adp:
         adp = ingest.load_adp()
@@ -551,7 +586,7 @@ def draft_cmd(
             "[warn] no adp.parquet on disk; skipping market comparison. "
             "Run `ffs fetch-adp` to enable."
         )
-    board = draft.with_tiers(board, teams=teams)
+    board = draft.with_tiers(board, teams=teams, starters=starters, flex_starters=flex_starters)
 
     if exclude_out:
         if "injury_status" in board.columns:
@@ -585,7 +620,10 @@ def draft_cmd(
                 "tier", "projected_points", "vbd", "replacement_pts", "injury_status"]
     cols = [c for c in cols if c in board.columns]
 
-    header = f"Draft board — {season}, {teams}-team league (1QB / 2RB / 2WR / 1TE / 1FLEX / 1K / 1DST)"
+    slot_pretty = " / ".join(f"{n}{p}" for p, n in starters.items())
+    if flex_starters:
+        slot_pretty += f" / {flex_starters}FLEX"
+    header = f"Draft board — {season}, {teams}-team league ({slot_pretty}, {ruleset})"
     filters = []
     if position:
         filters.append(f"position={position.upper()}")
@@ -619,6 +657,13 @@ def lineup_cmd(
         typer.Option("--username", help="Sleeper display name whose roster to load"),
     ] = None,
     window: Annotated[int, typer.Option("--window")] = 8,
+    roster_slots: Annotated[
+        str | None,
+        typer.Option(
+            "--roster-slots",
+            help="Override starting slots, e.g. QB=1,RB=2,WR=2,TE=1,FLEX=1,K=1,DST=1",
+        ),
+    ] = None,
     ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
 ) -> None:
     """Compute the optimal starting lineup from a roster (text file OR Sleeper league)."""
@@ -680,7 +725,8 @@ def lineup_cmd(
     if matched.empty:
         raise typer.Exit(1)
 
-    starters, bench = lineup.optimize_lineup(matched)
+    slots_spec = _parse_roster_slots(roster_slots) or lineup.DEFAULT_LINEUP
+    starters, bench = lineup.optimize_lineup(matched, slots=slots_spec)
     total = starters["projection"].sum()
     typer.echo(
         f"\nOptimal lineup — {season} week {week} (projected total: {total:.1f} pts)"
