@@ -41,12 +41,16 @@ def player_baseline(
 DEFAULT_SEASON_WEIGHTS: tuple[float, ...] = (0.60, 0.30, 0.10)
 
 
+DEFAULT_SEASON_FLOOR: float = 0.75
+
+
 def player_season_baseline(
     scored_df: pd.DataFrame,
     target_season: int,
     weights: tuple[float, ...] = DEFAULT_SEASON_WEIGHTS,
     min_recent_games: int = 3,
     regular_season_only: bool = True,
+    season_floor: float = DEFAULT_SEASON_FLOOR,
 ) -> pd.DataFrame:
     """Weighted blend of per-season PPGs from the N seasons prior to `target_season`.
 
@@ -54,6 +58,11 @@ def player_season_baseline(
     player actually has. Players with fewer than `min_recent_games` in the most
     recent prior season (target_season - 1) are dropped — this excludes retirees
     and players whose most recent form is too thin to trust.
+
+    `season_floor` caps how much a single bad season can drag the baseline:
+    each season's PPG is floored at `season_floor * median(other seasons)` in
+    the window. Handles cases like Justin Jefferson's 2025 (6.9 ppg after
+    12-14 ppg career) where the raw weighted mean underestimates true talent.
     """
     df = scored_df
     if regular_season_only and "season_type" in df.columns:
@@ -83,6 +92,22 @@ def player_season_baseline(
         & (per_season["games"] >= min_recent_games)
     ][["player_id"]].drop_duplicates()
     per_season = per_season.merge(qualifying, on="player_id", how="inner")
+
+    # Floor each season's PPG at `season_floor * median(other-season PPGs)`.
+    # Prevents a single catastrophic year from crashing the weighted baseline
+    # for a player with an otherwise consistent multi-year track record.
+    if season_floor > 0 and not per_season.empty:
+        per_season = per_season.dropna(subset=["player_id"])
+        totals = per_season.groupby("player_id")["ppg"].agg(list).to_dict()
+
+        def _floor(row):
+            others = [p for p in totals.get(row["player_id"], []) if p != row["ppg"]]
+            if not others:
+                return row["ppg"]
+            floor = season_floor * pd.Series(others).median()
+            return max(row["ppg"], floor)
+
+        per_season["ppg"] = per_season.apply(_floor, axis=1)
 
     per_season["weighted_ppg"] = per_season["ppg"] * per_season["weight"]
     agg = (
