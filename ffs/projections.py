@@ -118,6 +118,48 @@ DEFAULT_DEPTH_LIMITS: dict[str, int] = {"QB": 1, "RB": 3, "WR": 4, "TE": 2, "K":
 FLAT_PROJECTION_POSITIONS: tuple[str, ...] = ("K", "DST")
 # Positions that aren't tied to individual roster/depth-chart entries.
 TEAM_POSITIONS: tuple[str, ...] = ("DST",)
+# Positions that scale with offensive game environment (Vegas implied points).
+# DST is excluded because its scoring is inversely correlated with the
+# opposing offense's implied points, and we don't yet model that inversion.
+GAME_ENV_POSITIONS: tuple[str, ...] = ("QB", "RB", "WR", "TE", "K")
+
+
+def _game_env_factor_by_team_week(
+    schedule_df: pd.DataFrame, season: int
+) -> pd.DataFrame:
+    """Per-team-per-week game_env_factor = implied_points / season league mean."""
+    implied = team_implied_points(schedule_df, season)
+    if implied.empty:
+        return implied.assign(game_env_factor=pd.Series(dtype=float))
+    league_mean = implied["implied_points"].mean()
+    out = implied.copy()
+    out["game_env_factor"] = out["implied_points"] / league_mean
+    return out
+
+
+def team_implied_points(schedule_df: pd.DataFrame, season: int) -> pd.DataFrame:
+    """Per-team-per-week implied points, derived from Vegas total + spread.
+
+    Convention: `spread_line` is positive when the home team is favored.
+    home_implied = (total_line + spread_line) / 2
+    away_implied = (total_line - spread_line) / 2
+    """
+    games = schedule_df[
+        (schedule_df["season"] == season)
+        & schedule_df["total_line"].notna()
+        & schedule_df["spread_line"].notna()
+    ]
+    home = games[["week", "home_team", "total_line", "spread_line"]].copy()
+    home["team"] = home["home_team"]
+    home["implied_points"] = (home["total_line"] + home["spread_line"]) / 2
+    away = games[["week", "away_team", "total_line", "spread_line"]].copy()
+    away["team"] = away["away_team"]
+    away["implied_points"] = (away["total_line"] - away["spread_line"]) / 2
+    both = pd.concat(
+        [home[["week", "team", "implied_points"]], away[["week", "team", "implied_points"]]],
+        ignore_index=True,
+    )
+    return both
 
 
 def latest_depth_chart(depth_charts: pd.DataFrame) -> pd.DataFrame:
@@ -223,6 +265,8 @@ def project_week(
         ],
         ignore_index=True,
     )
+    game_env = _game_env_factor_by_team_week(schedule_df, target_season)
+    game_env_target = game_env[game_env["week"] == target_week][["team", "game_env_factor"]]
 
     frames = []
     for pos in positions:
@@ -244,7 +288,14 @@ def project_week(
                 right_on="defense",
                 how="left",
             )
-        merged["projection"] = merged["baseline_ppg"] * merged["opp_factor"]
+        if pos in GAME_ENV_POSITIONS and not game_env_target.empty:
+            merged = merged.merge(game_env_target, on="team", how="left")
+            merged["game_env_factor"] = merged["game_env_factor"].fillna(1.0)
+        else:
+            merged["game_env_factor"] = 1.0
+        merged["projection"] = (
+            merged["baseline_ppg"] * merged["opp_factor"] * merged["game_env_factor"]
+        )
         frames.append(merged)
 
     result = pd.concat(frames, ignore_index=True).dropna(subset=["projection"])
@@ -319,6 +370,7 @@ def project_season(
 
     team_weeks = sos.opponents_by_team(schedule_df)
     team_weeks = team_weeks[team_weeks["season"] == target_season]
+    game_env = _game_env_factor_by_team_week(schedule_df, target_season)
 
     frames = []
     for pos in positions:
@@ -340,7 +392,18 @@ def project_season(
                 right_on="defense",
                 how="left",
             )
-        joined["week_projection"] = joined["baseline_ppg"] * joined["opp_factor"]
+        if pos in GAME_ENV_POSITIONS and not game_env.empty:
+            joined = joined.merge(
+                game_env[["team", "week", "game_env_factor"]],
+                on=["team", "week"],
+                how="left",
+            )
+            joined["game_env_factor"] = joined["game_env_factor"].fillna(1.0)
+        else:
+            joined["game_env_factor"] = 1.0
+        joined["week_projection"] = (
+            joined["baseline_ppg"] * joined["opp_factor"] * joined["game_env_factor"]
+        )
         season_totals = (
             joined.groupby(
                 ["player_id", "player_display_name", "position", "team"], dropna=False
@@ -349,6 +412,7 @@ def project_season(
                 games=("week", "count"),
                 projected_points=("week_projection", "sum"),
                 avg_opp_factor=("opp_factor", "mean"),
+                avg_game_env=("game_env_factor", "mean"),
             )
             .reset_index()
         )

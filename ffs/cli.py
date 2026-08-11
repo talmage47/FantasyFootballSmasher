@@ -385,8 +385,9 @@ def project(
         result = result[result["position"] == position.upper()]
     cols = [
         "player_display_name", "position", "team", "opponent",
-        "baseline_ppg", "opp_factor", "projection", "injury_status",
+        "baseline_ppg", "opp_factor", "game_env_factor", "projection", "injury_status",
     ]
+    cols = [c for c in cols if c in result.columns]
     typer.echo(
         f"Projections — {season} week {week} (window={window})"
         + (f" [{position.upper()}]" if position else "")
@@ -457,8 +458,9 @@ def project_season_cmd(
     )
     if position:
         result = result[result["position"] == position.upper()]
-    cols = ["player_display_name", "position", "team",
-            "games", "avg_opp_factor", "ppg", "projected_points", "injury_status"]
+    cols = ["player_display_name", "position", "team", "games",
+            "avg_opp_factor", "avg_game_env", "ppg", "projected_points", "injury_status"]
+    cols = [c for c in cols if c in result.columns]
     typer.echo(
         f"Season projections — {season}"
         + (f" [{position.upper()}]" if position else "")

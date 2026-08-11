@@ -42,11 +42,16 @@ produces draft boards and weekly lineup recommendations. Designed for a
   position, ranked and league-relative.
 - `sos` — strength of schedule per team, using any season's schedule
   and any (prior) season's defensive rankings.
-- `projections` — baselines × opponent adjustment. Per-week projections use
-  a rolling last-N-game PPG (recent form); season projections use a weighted
-  blend of the last 3 seasons (60/30/10, most recent first) so career-year
-  outliers regress. Roster override for offseason moves; depth chart filter
-  to exclude backups; recency filter to drop retired players.
+- `projections` — baselines × opponent adjustment × game-environment factor.
+  Per-week projections use a rolling last-N-game PPG (recent form); season
+  projections use a weighted blend of the last 3 seasons (60/30/10, most
+  recent first) so career-year outliers regress. Game-environment factor
+  scales by team implied points (from Vegas `total_line` + `spread_line`)
+  vs. the season's league mean — high-total games boost QB/RB/WR/TE/K.
+  DST is excluded (offensive-environment factor doesn't apply cleanly).
+  Roster override for offseason moves; depth chart filter to exclude backups;
+  recency filter to drop retired players. Optional injury multiplier during
+  the regular season.
 - `draft` — value-based drafting (VBD) with configurable league size,
   optionally enriched with market ADP so you can spot values vs reaches, and
   rookies interpolated in from the ADP file when a `gsis_id` can't be joined.
