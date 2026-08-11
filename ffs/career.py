@@ -8,21 +8,29 @@ from ffs import config
 def load_scored(
     seasons: list[int] | None = None, ruleset: str = "standard"
 ) -> pd.DataFrame:
-    """Load and concatenate scored weekly stats across seasons."""
+    """Load and concatenate scored weekly stats across seasons (including DST if present)."""
     if seasons is None:
         parent = config.PROCESSED_DIR / "weekly" / ruleset
         paths = sorted(parent.glob("*.parquet")) if parent.exists() else []
+        dst_parent = config.PROCESSED_DIR / "dst" / ruleset
+        dst_paths = sorted(dst_parent.glob("*.parquet")) if dst_parent.exists() else []
     else:
         paths = [
             config.weekly_scored_path(s, ruleset)
             for s in seasons
             if config.weekly_scored_path(s, ruleset).exists()
         ]
+        dst_paths = [
+            config.dst_scored_path(s, ruleset)
+            for s in seasons
+            if config.dst_scored_path(s, ruleset).exists()
+        ]
     if not paths:
         raise FileNotFoundError(
             f"No scored data for ruleset {ruleset!r}. Run `ffs score` first."
         )
-    return pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
+    frames = [pd.read_parquet(p) for p in paths] + [pd.read_parquet(p) for p in dst_paths]
+    return pd.concat(frames, ignore_index=True)
 
 
 def add_career_game_number(df: pd.DataFrame) -> pd.DataFrame:

@@ -114,7 +114,9 @@ def player_season_baseline(
 
 
 DEFAULT_DEPTH_LIMITS: dict[str, int] = {"QB": 1, "RB": 3, "WR": 4, "TE": 2, "K": 1}
-FLAT_PROJECTION_POSITIONS: tuple[str, ...] = ("K",)
+FLAT_PROJECTION_POSITIONS: tuple[str, ...] = ("K", "DST")
+# Positions that aren't tied to individual roster/depth-chart entries.
+TEAM_POSITIONS: tuple[str, ...] = ("DST",)
 
 
 def latest_depth_chart(depth_charts: pd.DataFrame) -> pd.DataFrame:
@@ -139,25 +141,34 @@ def _apply_depth_filter(
     ranks = latest[["gsis_id", "pos_abb", "pos_rank"]].rename(
         columns={"gsis_id": "player_id"}
     )
-    merged = baselines.merge(ranks, on="player_id", how="left")
+    team_rows = baselines[baselines["position"].isin(TEAM_POSITIONS)]
+    player_rows = baselines[~baselines["position"].isin(TEAM_POSITIONS)]
+    merged = player_rows.merge(ranks, on="player_id", how="left")
     keep = pd.Series(False, index=merged.index)
     for pos, max_rank in limits.items():
         keep |= (merged["position"] == pos) & (merged["pos_rank"] <= max_rank)
     # Preserve rows whose position isn't in the limits dict (defensive fallback).
     keep |= ~merged["position"].isin(limits.keys())
-    return merged[keep].drop(columns=["pos_abb"])
+    filtered = merged[keep].drop(columns=["pos_abb"])
+    return pd.concat([filtered, team_rows], ignore_index=True)
 
 
 def _apply_current_teams(baselines: pd.DataFrame, rosters: pd.DataFrame) -> pd.DataFrame:
-    """Override baseline `team` with the target-season roster team where available."""
+    """Override baseline `team` with the target-season roster team where available.
+
+    Skips team-level rows (DST) whose `team` field is already authoritative.
+    """
+    team_rows = baselines[baselines["position"].isin(TEAM_POSITIONS)]
+    player_rows = baselines[~baselines["position"].isin(TEAM_POSITIONS)]
     current = (
         rosters[["gsis_id", "team"]]
         .drop_duplicates("gsis_id")
         .rename(columns={"gsis_id": "player_id", "team": "current_team"})
     )
-    merged = baselines.merge(current, on="player_id", how="left")
+    merged = player_rows.merge(current, on="player_id", how="left")
     merged["team"] = merged["current_team"].fillna(merged["team"])
-    return merged.drop(columns=["current_team"])
+    merged = merged.drop(columns=["current_team"])
+    return pd.concat([merged, team_rows], ignore_index=True)
 
 
 def project_week(

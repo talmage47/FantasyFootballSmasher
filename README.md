@@ -10,8 +10,11 @@ produces draft boards and weekly lineup recommendations. Designed for a
 **Data pipeline** (all files under `data/`, gitignored):
 - Weekly player stats (`data/raw/weekly/<season>.parquet`) via
   [`nflreadpy`](https://nflreadpy.nflverse.com/) — one file per season.
+- Per-team weekly stats (`data/raw/team_stats/<season>.parquet`) — the
+  source for DST scoring (aggregated defensive and special-teams stats).
 - Schedules (`data/raw/schedules/<season>.parquet`) — includes Vegas
-  `spread_line` and `total_line`.
+  `spread_line` and `total_line`. Also joined against team stats to
+  derive DST points-allowed bucket bonuses.
 - Rosters (`data/raw/rosters/<season>.parquet`) — the authoritative
   current-team lookup for offseason moves.
 - Depth charts (`data/raw/depth_charts/<season>.parquet`) — full
@@ -23,9 +26,15 @@ produces draft boards and weekly lineup recommendations. Designed for a
 **Scoring:**
 - `ffs/scoring.py` defines rules as a dict of `{stat_column: multiplier}`.
   `STANDARD` matches nflreadpy's built-in `fantasy_points` for a spot
-  check (Josh Allen 2025 wk 1 = 38.76 in both).
-- Scored data lands in `data/processed/weekly/<ruleset>/<season>.parquet`
-  alongside the raw stats for ad-hoc DuckDB queries.
+  check (Josh Allen 2025 wk 1 = 38.76 in both). Includes ESPN kicker
+  weights (tiered FG points + PATs).
+- `ffs/dst.py` scores team defenses: base points from sacks, INTs,
+  fumble recoveries, def/ST TDs, safeties, and blocked kicks, plus a
+  bucketed points-allowed bonus (10 for shutout, sliding down to -5
+  for 46+ allowed).
+- Player-scored data lands in `data/processed/weekly/<ruleset>/<season>.parquet`;
+  DST-scored data lands in `data/processed/dst/<ruleset>/<season>.parquet`.
+  `career.load_scored` transparently concatenates both.
 
 **Analytical layers:**
 - `career` — cross-season aggregation and rolling per-player views.
@@ -84,12 +93,13 @@ idempotent (skips existing Parquet files unless `--force` is passed).
 
 ```bash
 uv run ffs fetch                          # weekly stats, defaults to 2016-2025
+uv run ffs fetch-team-stats               # per-team stats (source of DST scoring)
 uv run ffs fetch-schedules                # schedules for the same range
 uv run ffs fetch-schedules --season 2026  # + upcoming season's schedule
 uv run ffs fetch-rosters --season 2026    # current-team assignments
 uv run ffs fetch-depth-charts --season 2026  # starter / backup ordering
 uv run ffs fetch-adp                      # FantasyPros consensus rankings
-uv run ffs score                          # compute standard fantasy points
+uv run ffs score                          # compute standard fantasy points (players + DST)
 ```
 
 Total data footprint: ~20 MB.
@@ -104,6 +114,7 @@ Every command supports `--help` for full options.
 |---|---|
 | `ffs fetch [--season Y \| --start Y --end Y] [--force]` | Weekly stats. Defaults to `DEFAULT_SEASONS` (2016–2025). |
 | `ffs fetch-schedules ...` | Season schedules. Same flags. |
+| `ffs fetch-team-stats ...` | Per-team weekly stats (source for DST scoring). |
 | `ffs fetch-rosters ...` | Annual rosters. |
 | `ffs fetch-depth-charts ...` | Depth charts (all snapshots preserved). |
 | `ffs fetch-adp [--force]` | FantasyPros redraft-overall ECR, no season needed. |
@@ -227,11 +238,13 @@ scoring format is a new dict, not a new class hierarchy.
 
 ## Known limitations
 
-- **No DST projections yet** — DST scoring and projections are not
-  wired up. Kickers *are* supported (ESPN standard scoring, opponent
-  adjustment skipped since defense-vs-K isn't meaningful), but note
-  that VBD tends to over-rate kickers relative to how the market
-  drafts them; treat the K adp_delta column as noise.
+- **K and DST projections skip opponent adjustment** — both use a flat
+  `opp_factor = 1.0`. For K, defense-vs-K isn't a meaningful signal
+  (game total / weather dominate). For DST, a smarter model would use
+  the opposing offense's turnover and sack rates; today the projection
+  is just the multi-season weighted baseline of the DST's own scoring.
+  VBD also tends to over-rate both K and DST relative to how the
+  market drafts them; treat their `adp_delta` values as noise.
 - **Rookie projections are market-derived, not model-derived** — rookies
   have no NFL games so the baseline can't produce anything. `draft` merges
   unmatched FantasyPros entries and interpolates projected points from

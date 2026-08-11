@@ -35,6 +35,21 @@ def load_schedules(season: int) -> pd.DataFrame:
     return pd.read_parquet(config.schedules_path(season))
 
 
+def fetch_team_stats(season: int) -> pd.DataFrame:
+    import nflreadpy as nfl
+
+    return nfl.load_team_stats([season]).to_pandas()
+
+
+def save_team_stats(df: pd.DataFrame, season: int) -> None:
+    path = config.ensure_parent(config.team_stats_path(season))
+    df.to_parquet(path, index=False)
+
+
+def load_team_stats(season: int) -> pd.DataFrame:
+    return pd.read_parquet(config.team_stats_path(season))
+
+
 def fetch_rosters(season: int) -> pd.DataFrame:
     import nflreadpy as nfl
 

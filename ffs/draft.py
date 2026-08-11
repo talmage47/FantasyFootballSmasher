@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-DEFAULT_STARTERS: dict[str, int] = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1}
+DEFAULT_STARTERS: dict[str, int] = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DST": 1}
 DEFAULT_FLEX_POSITIONS: tuple[str, ...] = ("RB", "WR", "TE")
 DEFAULT_FLEX_STARTERS: int = 1
 ROOKIE_POSITIONS: tuple[str, ...] = ("QB", "RB", "WR", "TE")

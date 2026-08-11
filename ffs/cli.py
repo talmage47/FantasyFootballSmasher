@@ -7,7 +7,7 @@ import typer
 from pathlib import Path
 
 from ffs import career as career_mod
-from ffs import config, draft, ingest, lineup, matchups, projections, scoring, sos
+from ffs import config, draft, dst, ingest, lineup, matchups, projections, scoring, sos
 
 app = typer.Typer(help="Fantasy Football Smasher", no_args_is_help=True)
 
@@ -104,6 +104,25 @@ def fetch_depth_charts_cmd(
         typer.echo(f"  → {len(df):,} rows saved to {path}")
 
 
+@app.command("fetch-team-stats")
+def fetch_team_stats_cmd(
+    seasons: Annotated[list[int] | None, typer.Option("--season", "-s")] = None,
+    start: Annotated[int | None, typer.Option("--start")] = None,
+    end: Annotated[int | None, typer.Option("--end")] = None,
+    force: Annotated[bool, typer.Option("--force")] = False,
+) -> None:
+    """Download per-team weekly stats (source of DST scoring)."""
+    for season in _resolve_seasons(seasons, start, end):
+        path = config.team_stats_path(season)
+        if path.exists() and not force:
+            typer.echo(f"[skip] {season}: {path.name} already exists")
+            continue
+        typer.echo(f"Fetching team stats for {season}…")
+        df = ingest.fetch_team_stats(season)
+        ingest.save_team_stats(df, season)
+        typer.echo(f"  → {len(df):,} rows saved to {path}")
+
+
 @app.command("fetch-rosters")
 def fetch_rosters_cmd(
     seasons: Annotated[list[int] | None, typer.Option("--season", "-s")] = None,
@@ -166,6 +185,22 @@ def score(
         config.ensure_parent(out_path)
         scored.to_parquet(out_path, index=False)
         typer.echo(f"Scored {len(scored):,} rows for {season} → {out_path}")
+
+        ts_path = config.team_stats_path(season)
+        sched_path = config.schedules_path(season)
+        dst_out = config.dst_scored_path(season, rules.name)
+        if not ts_path.exists() or not sched_path.exists():
+            typer.echo(
+                f"  [skip DST] need both team stats and schedule for {season}; "
+                f"run `ffs fetch-team-stats --season {season}` and `ffs fetch-schedules --season {season}`."
+            )
+            continue
+        team_stats = ingest.load_team_stats(season)
+        schedule = ingest.load_schedules(season)
+        dst_scored = dst.score_dst(team_stats, schedule)
+        config.ensure_parent(dst_out)
+        dst_scored.to_parquet(dst_out, index=False)
+        typer.echo(f"  Scored {len(dst_scored):,} DST rows → {dst_out}")
 
 
 @app.command()
@@ -461,7 +496,7 @@ def draft_cmd(
         cols = ["overall_rank", "player_display_name", "position", "team", "pos_rank",
                 "tier", "projected_points", "vbd", "replacement_pts"]
 
-    header = f"Draft board — {season}, {teams}-team league (1QB / 2RB / 2WR / 1TE / 1FLEX / 1K)"
+    header = f"Draft board — {season}, {teams}-team league (1QB / 2RB / 2WR / 1TE / 1FLEX / 1K / 1DST)"
     filters = []
     if position:
         filters.append(f"position={position.upper()}")

@@ -32,6 +32,14 @@ def weekly_scored_path(season: int, scoring_name: str) -> Path:
     return PROCESSED_DIR / "weekly" / scoring_name / f"{season}.parquet"
 
 
+def team_stats_path(season: int) -> Path:
+    return RAW_DIR / "team_stats" / f"{season}.parquet"
+
+
+def dst_scored_path(season: int, scoring_name: str) -> Path:
+    return PROCESSED_DIR / "dst" / scoring_name / f"{season}.parquet"
+
+
 def ensure_parent(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
