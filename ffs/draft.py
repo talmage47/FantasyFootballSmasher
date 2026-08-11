@@ -141,3 +141,40 @@ def with_rookies(
     )
     combined["adp_delta"] = combined["adp"] - combined["overall_rank"]
     return combined
+
+
+def with_tiers(
+    rankings: pd.DataFrame,
+    teams: int = 12,
+    starters: dict[str, int] = DEFAULT_STARTERS,
+    flex_positions: tuple[str, ...] = DEFAULT_FLEX_POSITIONS,
+    flex_starters: int = DEFAULT_FLEX_STARTERS,
+    gap_multiplier: float = 1.5,
+) -> pd.DataFrame:
+    """Add a `tier` column: consecutive players at a position, split on unusually large VBD gaps.
+
+    Within each position, sort by VBD descending, compute gap[i] = vbd[i] - vbd[i+1],
+    and start a new tier whenever gap[i] > gap_multiplier * median(gap) for that position.
+    The median is taken over the top 2× replacement-rank players so deep-bench noise
+    doesn't dominate. Tiers are numbered 1..N within each position.
+    """
+    ranks = replacement_ranks(teams, starters, flex_positions, flex_starters)
+    out = rankings.copy()
+    out["tier"] = pd.NA
+
+    for pos, replacement_rank in ranks.items():
+        pos_mask = out["position"] == pos
+        pos_df = out[pos_mask].sort_values("vbd", ascending=False)
+        if pos_df.empty:
+            continue
+        vbd = pos_df["vbd"].to_numpy(dtype=float)
+        gaps = vbd[:-1] - vbd[1:]
+        window = min(len(gaps), max(replacement_rank * 2 - 1, 1))
+        threshold = np.median(gaps[:window]) * gap_multiplier if window > 0 else 0.0
+        tiers = np.ones(len(vbd), dtype=int)
+        for i, gap in enumerate(gaps):
+            tiers[i + 1] = tiers[i] + (1 if gap > threshold else 0)
+        out.loc[pos_df.index, "tier"] = tiers
+
+    out["tier"] = out["tier"].astype("Int64")
+    return out

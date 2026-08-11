@@ -396,9 +396,23 @@ def draft_cmd(
     season: Annotated[int, typer.Option("--season", "-s")],
     teams: Annotated[int, typer.Option("--teams", help="League size")] = 12,
     top: Annotated[int, typer.Option("--top")] = 100,
+    position: Annotated[str | None, typer.Option("--position", "-p", help="Filter to a single position")] = None,
+    after_pick: Annotated[
+        int | None,
+        typer.Option("--after-pick", help="Only show players with ADP >= N (best available at pick N)"),
+    ] = None,
+    sleepers: Annotated[
+        bool, typer.Option("--sleepers", help="Sort by adp_delta desc (market drafts later than we do)")
+    ] = False,
+    reaches: Annotated[
+        bool, typer.Option("--reaches", help="Sort by adp_delta asc (market drafts earlier than we do)")
+    ] = False,
     ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
 ) -> None:
     """VBD-ranked draft board for the given season and league size."""
+    if sleepers and reaches:
+        raise typer.BadParameter("--sleepers and --reaches are mutually exclusive")
+
     scored, schedule, rosters_df, depth_charts_df = _load_projection_inputs(season, ruleset)
     season_proj = projections.project_season(
         scored,
@@ -408,23 +422,58 @@ def draft_cmd(
         depth_charts_df=depth_charts_df,
     )
     board = draft.draft_rankings(season_proj, teams=teams)
-    if config.adp_path().exists():
+    has_adp = config.adp_path().exists()
+    if has_adp:
         adp = ingest.load_adp()
         board = draft.with_adp(board, adp)
         board = draft.with_rookies(board, adp)
-        cols = ["overall_rank", "player_display_name", "position", "team",
-                "pos_rank", "projected_points", "vbd", "adp", "adp_delta", "is_rookie"]
     else:
         typer.echo(
             "[warn] no adp.parquet on disk; skipping market comparison. "
             "Run `ffs fetch-adp` to enable."
         )
-        cols = ["overall_rank", "player_display_name", "position", "team",
-                "pos_rank", "projected_points", "vbd", "replacement_pts"]
-    typer.echo(
-        f"Draft board — {season}, {teams}-team league "
-        f"(1QB / 2RB / 2WR / 1TE / 1FLEX)"
-    )
+    board = draft.with_tiers(board, teams=teams)
+
+    if position:
+        board = board[board["position"] == position.upper()]
+    if after_pick is not None:
+        if not has_adp:
+            raise typer.BadParameter("--after-pick requires ADP data; run `ffs fetch-adp` first")
+        board = board[board["adp"].notna() & (board["adp"] >= after_pick)]
+    if sleepers or reaches:
+        if not has_adp:
+            raise typer.BadParameter("--sleepers/--reaches require ADP data; run `ffs fetch-adp` first")
+        draftable = teams * 18
+        board = board[
+            board["adp_delta"].notna()
+            & (board["adp"] <= draftable)
+            & (board["overall_rank"] <= draftable)
+        ]
+        if sleepers:
+            board = board[board["adp_delta"] > 0].sort_values("adp_delta", ascending=False)
+        else:
+            board = board[board["adp_delta"] < 0].sort_values("adp_delta", ascending=True)
+
+    if has_adp:
+        cols = ["overall_rank", "player_display_name", "position", "team", "pos_rank",
+                "tier", "projected_points", "vbd", "adp", "adp_delta", "is_rookie"]
+    else:
+        cols = ["overall_rank", "player_display_name", "position", "team", "pos_rank",
+                "tier", "projected_points", "vbd", "replacement_pts"]
+
+    header = f"Draft board — {season}, {teams}-team league (1QB / 2RB / 2WR / 1TE / 1FLEX)"
+    filters = []
+    if position:
+        filters.append(f"position={position.upper()}")
+    if after_pick is not None:
+        filters.append(f"after pick {after_pick}")
+    if sleepers:
+        filters.append("sleepers")
+    if reaches:
+        filters.append("reaches")
+    if filters:
+        header += "  [" + ", ".join(filters) + "]"
+    typer.echo(header)
     typer.echo(board[cols].head(top).to_string(index=False))
 
 

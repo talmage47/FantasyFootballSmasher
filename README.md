@@ -131,7 +131,7 @@ Every command supports `--help` for full options.
 |---|---|
 | `ffs project --season Y --week W [--position P] [--window 8] [--top 25]` | Per-week projections: baseline PPG × opponent adjustment. |
 | `ffs project-season --season Y [--position P] [--window 17] [--top 40]` | Full-season projections (sums weekly projections). |
-| `ffs draft --season Y [--teams 12] [--top 100]` | VBD-ranked draft board across all positions, enriched with ADP if `adp.parquet` is present. |
+| `ffs draft --season Y [--teams 12] [--top 100] [--position P] [--after-pick N] [--sleepers \| --reaches]` | VBD-ranked draft board across all positions, enriched with ADP if `adp.parquet` is present. Includes a `tier` column (per-position VBD-gap clusters). `--after-pick`, `--sleepers`, `--reaches` require ADP. |
 | `ffs lineup --season Y --week W --roster ROSTER.txt [--window 8]` | Optimal starting lineup from a text file of player names. |
 
 ## Typical workflows
@@ -155,7 +155,11 @@ uv run ffs project-season --season 2026 --position WR --top 20
 The `adp_delta` column on the draft board is the most useful new
 signal: **positive** = market drafts them later than we rank them
 (potential values you can wait on); **negative** = market is more
-bullish than the model.
+bullish than the model. On draft day, `--after-pick N` narrows the
+board to "best available at pick N", and `--sleepers` / `--reaches`
+sort by `adp_delta` (sign-scoped, filtered to draftable players) to
+surface value / avoid overpays. The `tier` column marks per-position
+VBD-gap clusters so you can see when a tier is about to run out.
 
 ### In-season, weekly
 
