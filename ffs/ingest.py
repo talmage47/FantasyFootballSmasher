@@ -80,6 +80,21 @@ def load_depth_charts(season: int) -> pd.DataFrame:
     return pd.read_parquet(config.depth_charts_path(season))
 
 
+def fetch_injuries(season: int) -> pd.DataFrame:
+    import nflreadpy as nfl
+
+    return nfl.load_injuries([season]).to_pandas()
+
+
+def save_injuries(df: pd.DataFrame, season: int) -> None:
+    path = config.ensure_parent(config.injuries_path(season))
+    df.to_parquet(path, index=False)
+
+
+def load_injuries(season: int) -> pd.DataFrame:
+    return pd.read_parquet(config.injuries_path(season))
+
+
 def fetch_adp() -> pd.DataFrame:
     """FantasyPros redraft-overall consensus rankings joined to gsis_id."""
     import nflreadpy as nfl

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from ffs import injuries as injuries_mod
 from ffs import matchups, sos
 
 
@@ -183,6 +184,7 @@ def project_week(
     rosters_df: pd.DataFrame | None = None,
     depth_charts_df: pd.DataFrame | None = None,
     depth_limits: dict[str, int] = DEFAULT_DEPTH_LIMITS,
+    injuries_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Project target_week fantasy points as baseline_ppg × opponent adjustment factor."""
     if rankings_season is None:
@@ -246,7 +248,39 @@ def project_week(
         frames.append(merged)
 
     result = pd.concat(frames, ignore_index=True).dropna(subset=["projection"])
+    result = _apply_injuries(
+        result, injuries_df, season=target_season, week=target_week
+    )
     return result.sort_values("projection", ascending=False).reset_index(drop=True)
+
+
+def _apply_injuries(
+    df: pd.DataFrame,
+    injuries_df: pd.DataFrame | None,
+    season: int,
+    week: int | None = None,
+) -> pd.DataFrame:
+    """Attach injury_status and scale `projection` by availability multiplier.
+
+    The multiplier is only applied when the injury data is from the target
+    season (in-season usage). Off-season / prior-season data is attached as
+    informational only — end-of-year "Questionable" designations don't imply
+    the player will still be limited come next season.
+    """
+    if injuries_df is None or df.empty:
+        out = df.copy()
+        out["injury_status"] = pd.NA
+        return out
+    latest = injuries_mod.latest_injuries_per_player(
+        injuries_df, season=season, week=week
+    )
+    out = injuries_mod.attach_status(df, latest)
+    same_season = not latest.empty and (latest["season"] == season).any()
+    if same_season and "projection" in out.columns:
+        out["projection"] = out["projection"] * injuries_mod.availability_factor(
+            out["injury_status"]
+        )
+    return out
 
 
 def project_season(
@@ -260,6 +294,7 @@ def project_season(
     rosters_df: pd.DataFrame | None = None,
     depth_charts_df: pd.DataFrame | None = None,
     depth_limits: dict[str, int] = DEFAULT_DEPTH_LIMITS,
+    injuries_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Project a full regular season by summing opponent-adjusted weekly projections.
 
@@ -323,4 +358,16 @@ def project_season(
         frames.append(season_totals)
 
     result = pd.concat(frames, ignore_index=True).dropna(subset=["projected_points"])
+    if injuries_df is not None and not result.empty:
+        latest = injuries_mod.latest_injuries_per_player(
+            injuries_df, season=target_season
+        )
+        result = injuries_mod.attach_status(result, latest)
+        same_season = not latest.empty and (latest["season"] == target_season).any()
+        if same_season:
+            factor = injuries_mod.availability_factor(result["injury_status"])
+            result["projected_points"] = result["projected_points"] * factor
+            result["ppg"] = result["ppg"] * factor
+    else:
+        result["injury_status"] = pd.NA
     return result.sort_values("projected_points", ascending=False).reset_index(drop=True)

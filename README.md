@@ -98,6 +98,7 @@ uv run ffs fetch-schedules                # schedules for the same range
 uv run ffs fetch-schedules --season 2026  # + upcoming season's schedule
 uv run ffs fetch-rosters --season 2026    # current-team assignments
 uv run ffs fetch-depth-charts --season 2026  # starter / backup ordering
+uv run ffs fetch-injuries                 # weekly injury reports
 uv run ffs fetch-adp                      # FantasyPros consensus rankings
 uv run ffs score                          # compute standard fantasy points (players + DST)
 ```
@@ -115,6 +116,7 @@ Every command supports `--help` for full options.
 | `ffs fetch [--season Y \| --start Y --end Y] [--force]` | Weekly stats. Defaults to `DEFAULT_SEASONS` (2016–2025). |
 | `ffs fetch-schedules ...` | Season schedules. Same flags. |
 | `ffs fetch-team-stats ...` | Per-team weekly stats (source for DST scoring). |
+| `ffs fetch-injuries ...` | Weekly NFL injury reports (Out / Doubtful / Questionable). |
 | `ffs fetch-rosters ...` | Annual rosters. |
 | `ffs fetch-depth-charts ...` | Depth charts (all snapshots preserved). |
 | `ffs fetch-adp [--force]` | FantasyPros redraft-overall ECR, no season needed. |
@@ -142,7 +144,7 @@ Every command supports `--help` for full options.
 |---|---|
 | `ffs project --season Y --week W [--position P] [--window 8] [--top 25]` | Per-week projections: baseline PPG × opponent adjustment. |
 | `ffs project-season --season Y [--position P] [--window 17] [--top 40]` | Full-season projections (sums weekly projections). |
-| `ffs draft --season Y [--teams 12] [--top 100] [--position P] [--after-pick N] [--sleepers \| --reaches]` | VBD-ranked draft board across all positions, enriched with ADP if `adp.parquet` is present. Includes a `tier` column (per-position VBD-gap clusters). `--after-pick`, `--sleepers`, `--reaches` require ADP. |
+| `ffs draft --season Y [--teams 12] [--top 100] [--position P] [--after-pick N] [--sleepers \| --reaches] [--exclude-out]` | VBD-ranked draft board across all positions, enriched with ADP if `adp.parquet` is present. Includes a `tier` column (per-position VBD-gap clusters). `--after-pick`, `--sleepers`, `--reaches` require ADP. `--exclude-out` drops currently-Out players. |
 | `ffs lineup --season Y --week W --roster ROSTER.txt [--window 8]` | Optimal starting lineup from a text file of player names. |
 
 ## Typical workflows

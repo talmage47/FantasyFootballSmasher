@@ -7,7 +7,10 @@ import typer
 from pathlib import Path
 
 from ffs import career as career_mod
-from ffs import config, draft, dst, ingest, lineup, matchups, projections, scoring, sos
+from ffs import (
+    config, draft, dst, ingest, injuries as injuries_mod,
+    lineup, matchups, projections, scoring, sos,
+)
 
 app = typer.Typer(help="Fantasy Football Smasher", no_args_is_help=True)
 
@@ -101,6 +104,25 @@ def fetch_depth_charts_cmd(
         typer.echo(f"Fetching depth charts for {season}…")
         df = ingest.fetch_depth_charts(season)
         ingest.save_depth_charts(df, season)
+        typer.echo(f"  → {len(df):,} rows saved to {path}")
+
+
+@app.command("fetch-injuries")
+def fetch_injuries_cmd(
+    seasons: Annotated[list[int] | None, typer.Option("--season", "-s")] = None,
+    start: Annotated[int | None, typer.Option("--start")] = None,
+    end: Annotated[int | None, typer.Option("--end")] = None,
+    force: Annotated[bool, typer.Option("--force")] = False,
+) -> None:
+    """Download weekly NFL injury reports."""
+    for season in _resolve_seasons(seasons, start, end):
+        path = config.injuries_path(season)
+        if path.exists() and not force:
+            typer.echo(f"[skip] {season}: {path.name} already exists")
+            continue
+        typer.echo(f"Fetching injuries for {season}…")
+        df = ingest.fetch_injuries(season)
+        ingest.save_injuries(df, season)
         typer.echo(f"  → {len(df):,} rows saved to {path}")
 
 
@@ -341,7 +363,7 @@ def project(
     ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
 ) -> None:
     """Project fantasy points for a given week: baseline PPG × opponent adjustment."""
-    scored, schedule, rosters_df, depth_charts_df = _load_projection_inputs(
+    scored, schedule, rosters_df, depth_charts_df, injuries_df = _load_projection_inputs(
         season, ruleset
     )
     positions = (
@@ -357,12 +379,13 @@ def project(
         positions=positions,
         rosters_df=rosters_df,
         depth_charts_df=depth_charts_df,
+        injuries_df=injuries_df,
     )
     if position:
         result = result[result["position"] == position.upper()]
     cols = [
         "player_display_name", "position", "team", "opponent",
-        "baseline_ppg", "opp_factor", "projection",
+        "baseline_ppg", "opp_factor", "projection", "injury_status",
     ]
     typer.echo(
         f"Projections — {season} week {week} (window={window})"
@@ -392,7 +415,23 @@ def _load_projection_inputs(season: int, ruleset: str):
             f"[warn] no {season} depth charts on disk; backups will pollute projections. "
             f"Run `ffs fetch-depth-charts --season {season}` to fix."
         )
-    return scored, schedule, rosters_df, depth_charts_df
+    injuries_df, injuries_source_season = None, None
+    for candidate in (season, season - 1):
+        if config.injuries_path(candidate).exists():
+            injuries_df = ingest.load_injuries(candidate)
+            injuries_source_season = candidate
+            break
+    if injuries_df is None:
+        typer.echo(
+            f"[warn] no injuries on disk for {season} or {season - 1}; projections won't downweight Out/Doubtful/Questionable. "
+            f"Run `ffs fetch-injuries --season {season}` to fix."
+        )
+    elif injuries_source_season != season:
+        typer.echo(
+            f"[info] using {injuries_source_season} injury data (no {season} report yet); "
+            f"reflects end-of-{injuries_source_season} designations."
+        )
+    return scored, schedule, rosters_df, depth_charts_df, injuries_df
 
 
 @app.command("project-season")
@@ -404,8 +443,8 @@ def project_season_cmd(
     ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
 ) -> None:
     """Project full-season fantasy points per player."""
-    scored, schedule, rosters_df, depth_charts_df = _load_projection_inputs(season, ruleset)
-    positions = (position.upper(),) if position else matchups.SKILL_POSITIONS
+    scored, schedule, rosters_df, depth_charts_df, injuries_df = _load_projection_inputs(season, ruleset)
+    positions = (position.upper(),) if position else matchups.PROJECTABLE_POSITIONS
     result = projections.project_season(
         scored,
         schedule,
@@ -414,11 +453,12 @@ def project_season_cmd(
         positions=positions,
         rosters_df=rosters_df,
         depth_charts_df=depth_charts_df,
+        injuries_df=injuries_df,
     )
     if position:
         result = result[result["position"] == position.upper()]
     cols = ["player_display_name", "position", "team",
-            "games", "avg_opp_factor", "ppg", "projected_points"]
+            "games", "avg_opp_factor", "ppg", "projected_points", "injury_status"]
     typer.echo(
         f"Season projections — {season}"
         + (f" [{position.upper()}]" if position else "")
@@ -442,19 +482,23 @@ def draft_cmd(
     reaches: Annotated[
         bool, typer.Option("--reaches", help="Sort by adp_delta asc (market drafts earlier than we do)")
     ] = False,
+    exclude_out: Annotated[
+        bool, typer.Option("--exclude-out", help="Drop players currently designated Out")
+    ] = False,
     ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
 ) -> None:
     """VBD-ranked draft board for the given season and league size."""
     if sleepers and reaches:
         raise typer.BadParameter("--sleepers and --reaches are mutually exclusive")
 
-    scored, schedule, rosters_df, depth_charts_df = _load_projection_inputs(season, ruleset)
+    scored, schedule, rosters_df, depth_charts_df, injuries_df = _load_projection_inputs(season, ruleset)
     season_proj = projections.project_season(
         scored,
         schedule,
         target_season=season,
         rosters_df=rosters_df,
         depth_charts_df=depth_charts_df,
+        injuries_df=injuries_df,
     )
     board = draft.draft_rankings(season_proj, teams=teams)
     has_adp = config.adp_path().exists()
@@ -469,6 +513,9 @@ def draft_cmd(
         )
     board = draft.with_tiers(board, teams=teams)
 
+    if exclude_out:
+        if "injury_status" in board.columns:
+            board = board[board["injury_status"] != "Out"]
     if position:
         board = board[board["position"] == position.upper()]
     if after_pick is not None:
@@ -491,10 +538,12 @@ def draft_cmd(
 
     if has_adp:
         cols = ["overall_rank", "player_display_name", "position", "team", "pos_rank",
-                "tier", "projected_points", "vbd", "adp", "adp_delta", "is_rookie"]
+                "tier", "projected_points", "vbd", "adp", "adp_delta", "is_rookie",
+                "injury_status"]
     else:
         cols = ["overall_rank", "player_display_name", "position", "team", "pos_rank",
-                "tier", "projected_points", "vbd", "replacement_pts"]
+                "tier", "projected_points", "vbd", "replacement_pts", "injury_status"]
+    cols = [c for c in cols if c in board.columns]
 
     header = f"Draft board — {season}, {teams}-team league (1QB / 2RB / 2WR / 1TE / 1FLEX / 1K / 1DST)"
     filters = []
@@ -506,6 +555,8 @@ def draft_cmd(
         filters.append("sleepers")
     if reaches:
         filters.append("reaches")
+    if exclude_out:
+        filters.append("exclude Out")
     if filters:
         header += "  [" + ", ".join(filters) + "]"
     typer.echo(header)
@@ -529,7 +580,7 @@ def lineup_cmd(
     if not names:
         raise typer.BadParameter("Empty roster file")
 
-    scored, schedule, rosters_df, depth_charts_df = _load_projection_inputs(
+    scored, schedule, rosters_df, depth_charts_df, injuries_df = _load_projection_inputs(
         season, ruleset
     )
     proj = projections.project_week(
@@ -540,11 +591,20 @@ def lineup_cmd(
         window=window,
         rosters_df=rosters_df,
         depth_charts_df=depth_charts_df,
+        injuries_df=injuries_df,
     )
 
     matched, unmatched = lineup.resolve_roster(proj, names)
     if unmatched:
         typer.echo(f"[warn] Not projected (backups, byes, or unknown): {'; '.join(unmatched)}")
+    if "injury_status" in matched.columns:
+        flagged = matched[matched["injury_status"].isin(["Out", "Doubtful", "Questionable"])]
+        if not flagged.empty:
+            summary = "; ".join(
+                f"{r.player_display_name} ({r.injury_status})"
+                for r in flagged.itertuples()
+            )
+            typer.echo(f"[injury] {summary}")
     if matched.empty:
         raise typer.Exit(1)
 
@@ -553,10 +613,12 @@ def lineup_cmd(
     typer.echo(
         f"\nOptimal lineup — {season} week {week} (projected total: {total:.1f} pts)"
     )
-    starter_cols = ["slot", "player_display_name", "position", "team", "opponent", "projection"]
+    starter_cols = ["slot", "player_display_name", "position", "team", "opponent", "projection", "injury_status"]
+    starter_cols = [c for c in starter_cols if c in starters.columns]
     typer.echo(starters[starter_cols].to_string(index=False))
     if not bench.empty:
-        bench_cols = ["player_display_name", "position", "team", "opponent", "projection"]
+        bench_cols = ["player_display_name", "position", "team", "opponent", "projection", "injury_status"]
+        bench_cols = [c for c in bench_cols if c in bench.columns]
         typer.echo("\nBench:")
         typer.echo(bench[bench_cols].to_string(index=False))
 

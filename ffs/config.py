@@ -24,6 +24,10 @@ def depth_charts_path(season: int) -> Path:
     return RAW_DIR / "depth_charts" / f"{season}.parquet"
 
 
+def injuries_path(season: int) -> Path:
+    return RAW_DIR / "injuries" / f"{season}.parquet"
+
+
 def adp_path() -> Path:
     return RAW_DIR / "adp.parquet"
 
