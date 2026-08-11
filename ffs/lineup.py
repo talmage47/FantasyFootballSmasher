@@ -4,7 +4,7 @@ import re
 
 import pandas as pd
 
-DEFAULT_LINEUP: dict[str, int] = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1}
+DEFAULT_LINEUP: dict[str, int] = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1}
 FLEX_POSITIONS: tuple[str, ...] = ("RB", "WR", "TE")
 
 

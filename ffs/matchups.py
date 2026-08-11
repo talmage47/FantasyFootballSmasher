@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 SKILL_POSITIONS = ("QB", "RB", "WR", "TE")
+PROJECTABLE_POSITIONS = ("QB", "RB", "WR", "TE", "K")
 
 
 def points_allowed_by_game(

@@ -113,7 +113,8 @@ def player_season_baseline(
     ]
 
 
-DEFAULT_DEPTH_LIMITS: dict[str, int] = {"QB": 1, "RB": 3, "WR": 4, "TE": 2}
+DEFAULT_DEPTH_LIMITS: dict[str, int] = {"QB": 1, "RB": 3, "WR": 4, "TE": 2, "K": 1}
+FLAT_PROJECTION_POSITIONS: tuple[str, ...] = ("K",)
 
 
 def latest_depth_chart(depth_charts: pd.DataFrame) -> pd.DataFrame:
@@ -166,7 +167,7 @@ def project_week(
     target_week: int,
     window: int = 8,
     rankings_season: int | None = None,
-    positions: tuple[str, ...] = matchups.SKILL_POSITIONS,
+    positions: tuple[str, ...] = matchups.PROJECTABLE_POSITIONS,
     min_games: int = 3,
     rosters_df: pd.DataFrame | None = None,
     depth_charts_df: pd.DataFrame | None = None,
@@ -215,17 +216,21 @@ def project_week(
         pos_baselines = baselines[baselines["position"] == pos]
         if pos_baselines.empty:
             continue
-        rankings = matchups.defense_ranking(
-            scored_df, season=rankings_season, position=pos
-        )
-        league_avg = rankings["fp_allowed_pg"].mean()
-        rankings = rankings.assign(opp_factor=rankings["fp_allowed_pg"] / league_avg)
-        merged = pos_baselines.merge(opp, on="team", how="left").merge(
-            rankings[["defense", "opp_factor"]],
-            left_on="opponent",
-            right_on="defense",
-            how="left",
-        )
+        merged = pos_baselines.merge(opp, on="team", how="left")
+        if pos in FLAT_PROJECTION_POSITIONS:
+            merged["opp_factor"] = 1.0
+        else:
+            rankings = matchups.defense_ranking(
+                scored_df, season=rankings_season, position=pos
+            )
+            league_avg = rankings["fp_allowed_pg"].mean()
+            rankings = rankings.assign(opp_factor=rankings["fp_allowed_pg"] / league_avg)
+            merged = merged.merge(
+                rankings[["defense", "opp_factor"]],
+                left_on="opponent",
+                right_on="defense",
+                how="left",
+            )
         merged["projection"] = merged["baseline_ppg"] * merged["opp_factor"]
         frames.append(merged)
 
@@ -239,7 +244,7 @@ def project_season(
     target_season: int,
     season_weights: tuple[float, ...] = DEFAULT_SEASON_WEIGHTS,
     rankings_season: int | None = None,
-    positions: tuple[str, ...] = matchups.SKILL_POSITIONS,
+    positions: tuple[str, ...] = matchups.PROJECTABLE_POSITIONS,
     min_recent_games: int = 3,
     rosters_df: pd.DataFrame | None = None,
     depth_charts_df: pd.DataFrame | None = None,
@@ -274,18 +279,21 @@ def project_season(
         pos_baselines = baselines[baselines["position"] == pos]
         if pos_baselines.empty:
             continue
-        rankings = matchups.defense_ranking(
-            scored_df, season=rankings_season, position=pos
-        )
-        league_avg = rankings["fp_allowed_pg"].mean()
-        rankings = rankings.assign(opp_factor=rankings["fp_allowed_pg"] / league_avg)
-
-        joined = pos_baselines.merge(team_weeks, on="team", how="left").merge(
-            rankings[["defense", "opp_factor"]],
-            left_on="opponent",
-            right_on="defense",
-            how="left",
-        )
+        joined = pos_baselines.merge(team_weeks, on="team", how="left")
+        if pos in FLAT_PROJECTION_POSITIONS:
+            joined["opp_factor"] = 1.0
+        else:
+            rankings = matchups.defense_ranking(
+                scored_df, season=rankings_season, position=pos
+            )
+            league_avg = rankings["fp_allowed_pg"].mean()
+            rankings = rankings.assign(opp_factor=rankings["fp_allowed_pg"] / league_avg)
+            joined = joined.merge(
+                rankings[["defense", "opp_factor"]],
+                left_on="opponent",
+                right_on="defense",
+                how="left",
+            )
         joined["week_projection"] = joined["baseline_ppg"] * joined["opp_factor"]
         season_totals = (
             joined.groupby(

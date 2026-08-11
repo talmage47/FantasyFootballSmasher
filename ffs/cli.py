@@ -310,7 +310,7 @@ def project(
         season, ruleset
     )
     positions = (
-        (position.upper(),) if position else matchups.SKILL_POSITIONS
+        (position.upper(),) if position else matchups.PROJECTABLE_POSITIONS
     )
     result = projections.project_week(
         scored,
@@ -461,7 +461,7 @@ def draft_cmd(
         cols = ["overall_rank", "player_display_name", "position", "team", "pos_rank",
                 "tier", "projected_points", "vbd", "replacement_pts"]
 
-    header = f"Draft board — {season}, {teams}-team league (1QB / 2RB / 2WR / 1TE / 1FLEX)"
+    header = f"Draft board — {season}, {teams}-team league (1QB / 2RB / 2WR / 1TE / 1FLEX / 1K)"
     filters = []
     if position:
         filters.append(f"position={position.upper()}")

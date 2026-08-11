@@ -28,6 +28,16 @@ STANDARD = ScoringRules(
         "rushing_fumbles_lost": -2.0,
         "receiving_fumbles_lost": -2.0,
         "special_teams_tds": 6.0,
+        # Kicker (ESPN standard: 3pt <40yd, 4pt 40-49, 5pt 50+; 1 PAT; -1 missed).
+        "fg_made_0_19": 3.0,
+        "fg_made_20_29": 3.0,
+        "fg_made_30_39": 3.0,
+        "fg_made_40_49": 4.0,
+        "fg_made_50_59": 5.0,
+        "fg_made_60_": 5.0,
+        "fg_missed": -1.0,
+        "pat_made": 1.0,
+        "pat_missed": -1.0,
     },
 )
 

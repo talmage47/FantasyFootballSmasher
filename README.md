@@ -227,8 +227,11 @@ scoring format is a new dict, not a new class hierarchy.
 
 ## Known limitations
 
-- **No K / DST projections yet** — scoring rules and depth filter both
-  skip them. Lineups and draft boards only cover QB/RB/WR/TE.
+- **No DST projections yet** — DST scoring and projections are not
+  wired up. Kickers *are* supported (ESPN standard scoring, opponent
+  adjustment skipped since defense-vs-K isn't meaningful), but note
+  that VBD tends to over-rate kickers relative to how the market
+  drafts them; treat the K adp_delta column as noise.
 - **Rookie projections are market-derived, not model-derived** — rookies
   have no NFL games so the baseline can't produce anything. `draft` merges
   unmatched FantasyPros entries and interpolates projected points from
