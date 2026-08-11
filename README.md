@@ -261,7 +261,11 @@ scoring format is a new dict, not a new class hierarchy.
 - **No opportunity model** — a player's baseline is their historical
   PPG, not a snap-share × team-context estimate. A backup who inherits
   a starting role won't have his projection change until games happen.
-- **No variance / floor-ceiling** — projections are point estimates.
+- **Variance / floor-ceiling now surfaced** — `floor` and `ceiling`
+  columns on draft board and lineup are `projection ± σ`, where σ is
+  the per-game std-dev of a player's last N games (multiplied by
+  √games for season-level projections). This is a rough boom-bust
+  hint, not a probability distribution.
 - **Sleeper integration is read-only and roster-only** — `ffs
   fetch-sleeper-league` caches league settings, rosters, users, and
   the player map; `ffs lineup` can then use `--league-id ID --username

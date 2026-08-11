@@ -440,7 +440,8 @@ def project(
         result = result[result["position"] == position.upper()]
     cols = [
         "player_display_name", "position", "team", "opponent",
-        "baseline_ppg", "opp_factor", "game_env_factor", "projection", "injury_status",
+        "baseline_ppg", "opp_factor", "game_env_factor",
+        "floor", "projection", "ceiling", "injury_status",
     ]
     cols = [c for c in cols if c in result.columns]
     typer.echo(
@@ -514,7 +515,8 @@ def project_season_cmd(
     if position:
         result = result[result["position"] == position.upper()]
     cols = ["player_display_name", "position", "team", "games",
-            "avg_opp_factor", "avg_game_env", "ppg", "projected_points", "injury_status"]
+            "avg_opp_factor", "avg_game_env", "ppg",
+            "floor", "projected_points", "ceiling", "injury_status"]
     cols = [c for c in cols if c in result.columns]
     typer.echo(
         f"Season projections — {season}"
@@ -613,11 +615,12 @@ def draft_cmd(
 
     if has_adp:
         cols = ["overall_rank", "player_display_name", "position", "team", "pos_rank",
-                "tier", "projected_points", "vbd", "adp", "adp_delta", "is_rookie",
-                "injury_status"]
+                "tier", "floor", "projected_points", "ceiling", "vbd",
+                "adp", "adp_delta", "is_rookie", "injury_status"]
     else:
         cols = ["overall_rank", "player_display_name", "position", "team", "pos_rank",
-                "tier", "projected_points", "vbd", "replacement_pts", "injury_status"]
+                "tier", "floor", "projected_points", "ceiling", "vbd",
+                "replacement_pts", "injury_status"]
     cols = [c for c in cols if c in board.columns]
 
     slot_pretty = " / ".join(f"{n}{p}" for p, n in starters.items())
@@ -731,11 +734,13 @@ def lineup_cmd(
     typer.echo(
         f"\nOptimal lineup — {season} week {week} (projected total: {total:.1f} pts)"
     )
-    starter_cols = ["slot", "player_display_name", "position", "team", "opponent", "projection", "injury_status"]
+    starter_cols = ["slot", "player_display_name", "position", "team", "opponent",
+                    "floor", "projection", "ceiling", "injury_status"]
     starter_cols = [c for c in starter_cols if c in starters.columns]
     typer.echo(starters[starter_cols].to_string(index=False))
     if not bench.empty:
-        bench_cols = ["player_display_name", "position", "team", "opponent", "projection", "injury_status"]
+        bench_cols = ["player_display_name", "position", "team", "opponent",
+                      "floor", "projection", "ceiling", "injury_status"]
         bench_cols = [c for c in bench_cols if c in bench.columns]
         typer.echo("\nBench:")
         typer.echo(bench[bench_cols].to_string(index=False))

@@ -44,6 +44,36 @@ DEFAULT_SEASON_WEIGHTS: tuple[float, ...] = (0.60, 0.30, 0.10)
 DEFAULT_SEASON_FLOOR: float = 0.75
 
 
+def player_sigma_ppg(
+    scored_df: pd.DataFrame,
+    up_to: tuple[int, int] | None = None,
+    window: int = 17,
+    min_games: int = 4,
+    regular_season_only: bool = True,
+) -> pd.DataFrame:
+    """Per-player per-game standard deviation over the last N games.
+
+    Used to derive per-game floor/ceiling. Players with fewer than
+    `min_games` in the window get NaN.
+    """
+    df = scored_df
+    if regular_season_only and "season_type" in df.columns:
+        df = df[df["season_type"] == "REG"]
+    if up_to is not None:
+        df = df[
+            (df["season"] < up_to[0])
+            | ((df["season"] == up_to[0]) & (df["week"] <= up_to[1]))
+        ]
+    df = df.sort_values(["player_id", "season", "week"])
+    tail = df.groupby("player_id").tail(window)
+    grouped = tail.groupby("player_id")
+    sigma = grouped["fantasy_points_ffs"].std(ddof=0)
+    counts = grouped["fantasy_points_ffs"].count()
+    out = pd.DataFrame({"player_id": sigma.index, "sigma_ppg": sigma.values, "sigma_n": counts.values})
+    out.loc[out["sigma_n"] < min_games, "sigma_ppg"] = pd.NA
+    return out[["player_id", "sigma_ppg"]]
+
+
 def player_season_baseline(
     scored_df: pd.DataFrame,
     target_season: int,
@@ -324,6 +354,10 @@ def project_week(
         frames.append(merged)
 
     result = pd.concat(frames, ignore_index=True).dropna(subset=["projection"])
+    sigma = player_sigma_ppg(scored_df, up_to=up_to, window=window * 2)
+    result = result.merge(sigma, on="player_id", how="left")
+    result["floor"] = (result["projection"] - result["sigma_ppg"]).clip(lower=0)
+    result["ceiling"] = result["projection"] + result["sigma_ppg"]
     result = _apply_injuries(
         result, injuries_df, season=target_season, week=target_week
     )
@@ -352,10 +386,11 @@ def _apply_injuries(
     )
     out = injuries_mod.attach_status(df, latest)
     same_season = not latest.empty and (latest["season"] == season).any()
-    if same_season and "projection" in out.columns:
-        out["projection"] = out["projection"] * injuries_mod.availability_factor(
-            out["injury_status"]
-        )
+    if same_season:
+        factor = injuries_mod.availability_factor(out["injury_status"])
+        for col in ("projection", "floor", "ceiling"):
+            if col in out.columns:
+                out[col] = out[col] * factor
     return out
 
 
@@ -447,6 +482,12 @@ def project_season(
         frames.append(season_totals)
 
     result = pd.concat(frames, ignore_index=True).dropna(subset=["projected_points"])
+    import numpy as np
+    sigma = player_sigma_ppg(scored_df, up_to=(target_season - 1, 99), window=34)
+    result = result.merge(sigma, on="player_id", how="left")
+    season_sigma = result["sigma_ppg"] * np.sqrt(result["games"].fillna(17))
+    result["floor"] = (result["projected_points"] - season_sigma).clip(lower=0)
+    result["ceiling"] = result["projected_points"] + season_sigma
     if injuries_df is not None and not result.empty:
         latest = injuries_mod.latest_injuries_per_player(
             injuries_df, season=target_season
@@ -455,8 +496,9 @@ def project_season(
         same_season = not latest.empty and (latest["season"] == target_season).any()
         if same_season:
             factor = injuries_mod.availability_factor(result["injury_status"])
-            result["projected_points"] = result["projected_points"] * factor
-            result["ppg"] = result["ppg"] * factor
+            for col in ("projected_points", "ppg", "floor", "ceiling"):
+                if col in result.columns:
+                    result[col] = result[col] * factor
     else:
         result["injury_status"] = pd.NA
     return result.sort_values("projected_points", ascending=False).reset_index(drop=True)
