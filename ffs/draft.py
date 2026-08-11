@@ -73,6 +73,52 @@ def with_adp(rankings: pd.DataFrame, adp: pd.DataFrame) -> pd.DataFrame:
     return merged
 
 
+def with_hybrid_replacement(
+    rankings: pd.DataFrame,
+    teams: int = 12,
+) -> pd.DataFrame:
+    """Recompute VBD using max(current replacement_pts, market-implied replacement).
+
+    The market-implied replacement is the median projection among players the
+    market has actually drafted at this position (ADP within the drafted pool
+    of `teams * 15` picks). Where the market's median projection is higher
+    than our VBD replacement, we adopt the market's — that dampens inflated
+    VBD when our top-end projections outrun the market. For positions where
+    the market and our replacement roughly agree (QB/RB/WR at 12 teams), the
+    max is our VBD replacement and nothing changes.
+
+    Assumes `rankings` already carries `adp` from with_adp. Recomputes
+    overall_rank, pos_rank, and adp_delta after.
+    """
+    out = rankings.copy()
+    if "adp" not in out.columns:
+        return out  # no market data; nothing to hybridize
+
+    drafted_cutoff = teams * 15  # 15 rounds ≈ standard roster depth
+    for pos in out["position"].dropna().unique():
+        pos_mask = out["position"] == pos
+        pos_df = out[pos_mask]
+        drafted = pos_df.dropna(subset=["adp"]).loc[
+            lambda d: d["adp"] <= drafted_cutoff
+        ]
+        if drafted.empty:
+            continue
+        market_replacement = drafted["projected_points"].median()
+        current_replacement = pos_df["replacement_pts"].iloc[0]
+        new_replacement = max(current_replacement, market_replacement)
+        if new_replacement > current_replacement:
+            out.loc[pos_mask, "replacement_pts"] = new_replacement
+            out.loc[pos_mask, "vbd"] = (
+                out.loc[pos_mask, "projected_points"] - new_replacement
+            )
+
+    out = out.sort_values("vbd", ascending=False).reset_index(drop=True)
+    out["overall_rank"] = out.index + 1
+    if "adp" in out.columns:
+        out["adp_delta"] = out["adp"] - out["overall_rank"]
+    return out
+
+
 def with_rookies(
     rankings: pd.DataFrame,
     adp: pd.DataFrame,

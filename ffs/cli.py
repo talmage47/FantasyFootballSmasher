@@ -545,6 +545,7 @@ def draft_cmd(
         adp = ingest.load_adp()
         board = draft.with_adp(board, adp)
         board = draft.with_rookies(board, adp)
+        board = draft.with_hybrid_replacement(board, teams=teams)
     else:
         typer.echo(
             "[warn] no adp.parquet on disk; skipping market comparison. "
