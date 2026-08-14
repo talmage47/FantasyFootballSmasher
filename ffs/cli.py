@@ -600,19 +600,22 @@ def draft_cmd(
         season_proj, teams=teams, starters=starters, flex_starters=flex_starters
     )
     has_adp = config.adp_path().exists()
+    has_ffc = config.ffc_adp_path().exists()
+    ffc_df = ingest.load_ffc_adp() if has_ffc else None
     if has_adp:
         adp = ingest.load_adp()
         board = draft.with_adp(board, adp)
-        board = draft.with_rookies(board, adp)
+        if has_ffc:
+            board = draft.with_ffc_adp(board, ffc_df)
+        board = draft.with_rookies(board, adp, ffc=ffc_df)
         board = draft.with_hybrid_replacement(board, teams=teams)
     else:
         typer.echo(
             "[warn] no adp.parquet on disk; skipping market comparison. "
             "Run `ffs fetch-adp` to enable."
         )
-    has_ffc = config.ffc_adp_path().exists()
-    if has_ffc:
-        board = draft.with_ffc_adp(board, ingest.load_ffc_adp())
+        if has_ffc:
+            board = draft.with_ffc_adp(board, ffc_df)
     board = draft.with_tiers(board, teams=teams, starters=starters, flex_starters=flex_starters)
 
     if exclude_out:

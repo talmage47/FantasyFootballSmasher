@@ -171,12 +171,15 @@ def with_hybrid_replacement(
     out["overall_rank"] = out.index + 1
     if "adp" in out.columns:
         out["adp_delta"] = out["adp"] - out["overall_rank"]
+    if "ffc_adp" in out.columns:
+        out["ffc_delta"] = out["ffc_adp"] - out["overall_rank"]
     return out
 
 
 def with_rookies(
     rankings: pd.DataFrame,
     adp: pd.DataFrame,
+    ffc: pd.DataFrame | None = None,
     positions: tuple[str, ...] = ROOKIE_POSITIONS,
 ) -> pd.DataFrame:
     """Add ADP entries with no `player_id` (typically rookies) using market-implied projections.
@@ -186,9 +189,14 @@ def with_rookies(
     players on the (adp, projected_points) curve — i.e. "the market is drafting this
     rookie roughly here, so treat him like other players drafted at that ADP".
 
+    When `ffc` is provided, prefer FFC ADP over FantasyPros for both the
+    interpolation curve x-axis and the rookie's placement — FFC reflects real
+    mock drafts and is meaningfully more accurate than FP ECR for rookies (see
+    project_model_issues.md: Jeanty was 30+ picks underrated by FP-based interp).
+
     Assumes `rankings` already has `adp` (from `with_adp`) and `replacement_pts`
-    (from `draft_rankings`). Recomputes `overall_rank`, `pos_rank`, and `adp_delta`
-    after insertion so rookies interleave correctly.
+    (from `draft_rankings`). Recomputes `overall_rank`, `pos_rank`, `adp_delta`,
+    and `ffc_delta` after insertion so rookies interleave correctly.
     """
     rookies_raw = adp[adp["player_id"].isna() & adp["pos"].isin(positions)]
     if rookies_raw.empty:
@@ -196,28 +204,57 @@ def with_rookies(
         rankings["is_rookie"] = False
         return rankings
 
+    ffc_by_key: dict[str, float] = {}
+    if ffc is not None and not ffc.empty:
+        ffc_players = ffc[ffc["position"] != "DEF"].copy()
+        ffc_players["_key"] = ffc_players["name"].map(_normalize_name)
+        ffc_by_key = (
+            ffc_players.drop_duplicates("_key").set_index("_key")["adp"].to_dict()
+        )
+
+    have_ffc_col = "ffc_adp" in rankings.columns
+
     replacement = rankings.dropna(subset=["replacement_pts"]).groupby("position")[
         "replacement_pts"
     ].first().to_dict()
 
     rookie_frames = []
     for pos in positions:
-        pos_matched = (
-            rankings[(rankings["position"] == pos) & rankings["adp"].notna()]
-            .sort_values("adp")
-        )
-        if pos_matched.empty:
+        pos_all = rankings[rankings["position"] == pos]
+        fp_curve = pos_all.dropna(subset=["adp"]).sort_values("adp")
+        if fp_curve.empty:
             continue
+        ffc_curve = (
+            pos_all.dropna(subset=["ffc_adp"]).sort_values("ffc_adp")
+            if have_ffc_col else pos_all.iloc[0:0]
+        )
+        replacement_pts = replacement.get(pos, fp_curve["projected_points"].min())
+
         pos_rookies = rookies_raw[rookies_raw["pos"] == pos].copy()
         if pos_rookies.empty:
             continue
-        replacement_pts = replacement.get(pos, pos_matched["projected_points"].min())
-        pos_rookies["projected_points"] = np.interp(
-            pos_rookies["adp"].to_numpy(dtype=float),
-            pos_matched["adp"].to_numpy(dtype=float),
-            pos_matched["projected_points"].to_numpy(dtype=float),
-            right=replacement_pts,
+
+        pos_rookies["ffc_adp"] = pos_rookies["player"].map(
+            lambda n: ffc_by_key.get(_normalize_name(n))
         )
+
+        proj = np.empty(len(pos_rookies))
+        for i, (_, row) in enumerate(pos_rookies.iterrows()):
+            if not ffc_curve.empty and pd.notna(row["ffc_adp"]):
+                proj[i] = np.interp(
+                    row["ffc_adp"],
+                    ffc_curve["ffc_adp"].to_numpy(dtype=float),
+                    ffc_curve["projected_points"].to_numpy(dtype=float),
+                    right=replacement_pts,
+                )
+            else:
+                proj[i] = np.interp(
+                    row["adp"],
+                    fp_curve["adp"].to_numpy(dtype=float),
+                    fp_curve["projected_points"].to_numpy(dtype=float),
+                    right=replacement_pts,
+                )
+        pos_rookies["projected_points"] = proj
         rookie_frames.append(pos_rookies)
 
     rankings = rankings.copy()
@@ -241,6 +278,8 @@ def with_rookies(
         .astype(int)
     )
     combined["adp_delta"] = combined["adp"] - combined["overall_rank"]
+    if "ffc_adp" in combined.columns:
+        combined["ffc_delta"] = combined["ffc_adp"] - combined["overall_rank"]
     return combined
 
 
