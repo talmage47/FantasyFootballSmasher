@@ -125,3 +125,35 @@ def save_adp(df: pd.DataFrame) -> None:
 
 def load_adp() -> pd.DataFrame:
     return pd.read_parquet(config.adp_path())
+
+
+_FFC_SCORING_ALIAS = {"standard": "standard", "ppr": "ppr", "half_ppr": "half-ppr"}
+
+
+def fetch_ffc_adp(
+    scoring: str = "standard", teams: int = 12, year: int | None = None
+) -> pd.DataFrame:
+    """Fantasy Football Calculator ADP — real 12-team mock drafts, updated daily."""
+    import requests
+
+    ffc_scoring = _FFC_SCORING_ALIAS.get(scoring, scoring)
+    url = "https://fantasyfootballcalculator.com/api/v1/adp/" + ffc_scoring
+    params: dict[str, int | str] = {"teams": teams, "position": "all"}
+    if year is not None:
+        params["year"] = year
+    resp = requests.get(url, params=params, timeout=30)
+    resp.raise_for_status()
+    payload = resp.json()
+    df = pd.DataFrame(payload["players"])
+    meta = payload.get("meta", {})
+    df.attrs["ffc_meta"] = meta
+    return df
+
+
+def save_ffc_adp(df: pd.DataFrame) -> None:
+    path = config.ensure_parent(config.ffc_adp_path())
+    df.to_parquet(path, index=False)
+
+
+def load_ffc_adp() -> pd.DataFrame:
+    return pd.read_parquet(config.ffc_adp_path())

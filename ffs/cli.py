@@ -106,6 +106,28 @@ def fetch_adp_cmd(
     )
 
 
+@app.command("fetch-ffc-adp")
+def fetch_ffc_adp_cmd(
+    scoring: Annotated[str, typer.Option("--scoring", "-r")] = "standard",
+    teams: Annotated[int, typer.Option("--teams")] = 12,
+    year: Annotated[int | None, typer.Option("--year")] = None,
+    force: Annotated[bool, typer.Option("--force", help="Refetch even if ffc_adp.parquet exists")] = False,
+) -> None:
+    """Fetch Fantasy Football Calculator ADP (real 12-team mock drafts, updated daily)."""
+    path = config.ffc_adp_path()
+    if path.exists() and not force:
+        typer.echo(f"[skip] {path.name} already exists (use --force to refresh)")
+        return
+    typer.echo(f"Fetching FFC ADP ({scoring}, {teams}-team)…")
+    df = ingest.fetch_ffc_adp(scoring=scoring, teams=teams, year=year)
+    meta = df.attrs.get("ffc_meta", {})
+    ingest.save_ffc_adp(df)
+    typer.echo(
+        f"  → {len(df):,} players from {meta.get('total_drafts', '?')} drafts "
+        f"({meta.get('start_date', '?')} → {meta.get('end_date', '?')}) saved to {path}"
+    )
+
+
 @app.command("fetch-depth-charts")
 def fetch_depth_charts_cmd(
     seasons: Annotated[list[int] | None, typer.Option("--season", "-s")] = None,
@@ -588,6 +610,9 @@ def draft_cmd(
             "[warn] no adp.parquet on disk; skipping market comparison. "
             "Run `ffs fetch-adp` to enable."
         )
+    has_ffc = config.ffc_adp_path().exists()
+    if has_ffc:
+        board = draft.with_ffc_adp(board, ingest.load_ffc_adp())
     board = draft.with_tiers(board, teams=teams, starters=starters, flex_starters=flex_starters)
 
     if exclude_out:
@@ -616,7 +641,7 @@ def draft_cmd(
     if has_adp:
         cols = ["overall_rank", "player_display_name", "position", "team", "pos_rank",
                 "tier", "floor", "projected_points", "ceiling", "vbd",
-                "adp", "adp_delta", "is_rookie", "injury_status"]
+                "adp", "adp_delta", "ffc_adp", "ffc_delta", "is_rookie", "injury_status"]
     else:
         cols = ["overall_rank", "player_display_name", "position", "team", "pos_rank",
                 "tier", "floor", "projected_points", "ceiling", "vbd",

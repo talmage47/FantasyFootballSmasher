@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+import unicodedata
+
 import numpy as np
 import pandas as pd
 
@@ -71,6 +74,58 @@ def with_adp(rankings: pd.DataFrame, adp: pd.DataFrame) -> pd.DataFrame:
     merged = rankings.merge(adp_slim, on="player_id", how="left")
     merged["adp_delta"] = merged["adp"] - merged["overall_rank"]
     return merged
+
+
+def _normalize_name(s: object) -> str:
+    if not isinstance(s, str):
+        return ""
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+    s = s.lower()
+    s = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b\.?", "", s)
+    s = re.sub(r"[^a-z0-9 ]", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def with_ffc_adp(rankings: pd.DataFrame, ffc: pd.DataFrame) -> pd.DataFrame:
+    """Attach Fantasy Football Calculator ADP as `ffc_adp` and `ffc_delta`.
+
+    FFC shares no player_id with nflreadpy. Non-DST rows join by normalized
+    player name; DST rows join by team abbreviation (FFC labels DSTs as
+    "Denver Defense" with the team code in the `team` field).
+    """
+    out = rankings.copy()
+    out["ffc_adp"] = pd.NA
+    out["ffc_stdev"] = pd.NA
+    out["ffc_n"] = pd.NA
+
+    if ffc.empty:
+        out["ffc_delta"] = pd.NA
+        return out
+
+    ffc = ffc.copy()
+    players = ffc[ffc["position"] != "DEF"].copy()
+    players["_key"] = players["name"].map(_normalize_name)
+    players = players.drop_duplicates("_key")[
+        ["_key", "adp", "stdev", "times_drafted"]
+    ].rename(columns={"adp": "ffc_adp", "stdev": "ffc_stdev", "times_drafted": "ffc_n"})
+
+    out["_key"] = out["player_display_name"].map(_normalize_name)
+    lookup = players.set_index("_key")
+    for col in ("ffc_adp", "ffc_stdev", "ffc_n"):
+        mapped = out["_key"].map(lookup[col])
+        out[col] = out[col].where(mapped.isna(), mapped)
+
+    dsts = ffc[ffc["position"] == "DEF"].drop_duplicates("team")
+    dst_lookup = dsts.set_index("team")
+    dst_mask = out["position"] == "DST"
+    if dst_mask.any():
+        for col, src in (("ffc_adp", "adp"), ("ffc_stdev", "stdev"), ("ffc_n", "times_drafted")):
+            mapped = out.loc[dst_mask, "team"].map(dst_lookup[src])
+            out.loc[dst_mask, col] = mapped
+
+    out = out.drop(columns=["_key"])
+    out["ffc_delta"] = out["ffc_adp"] - out["overall_rank"]
+    return out
 
 
 def with_hybrid_replacement(
