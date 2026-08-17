@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ffs import career as career_mod
 from ffs import (
-    config, draft, dst, ingest, injuries as injuries_mod,
+    config, draft, draftlive, dst, ingest, injuries as injuries_mod,
     lineup, matchups, platoon as platoon_mod, projections, scoring, sleeper, sos,
 )
 
@@ -946,6 +946,343 @@ def platoon_cmd(
         grid = platoon_mod.platoon_grid(weekly, anchor_pid, top_pid)
         typer.echo(f"\nWeek-by-week grid — {anchor['player_display_name']} vs {top_name}")
         typer.echo(grid.to_string(index=False))
+
+
+def _build_draft_board(
+    season: int,
+    ruleset: str,
+    teams: int,
+    starters: dict[str, int],
+    flex_counts: dict[str, int],
+) -> pd.DataFrame:
+    """Compute the full VBD board with ADP + tiers + bye_week, ready for live filtering."""
+    scored, schedule, rosters_df, depth_charts_df, injuries_df = _load_projection_inputs(
+        season, ruleset
+    )
+    season_proj = projections.project_season(
+        scored, schedule, target_season=season,
+        rosters_df=rosters_df, depth_charts_df=depth_charts_df, injuries_df=injuries_df,
+    )
+    board = draft.draft_rankings(
+        season_proj, teams=teams, starters=starters, flex_counts=flex_counts
+    )
+    has_adp = config.adp_path().exists()
+    has_ffc = config.ffc_adp_path().exists()
+    ffc_df = ingest.load_ffc_adp() if has_ffc else None
+    if has_adp:
+        adp_df = ingest.load_adp()
+        board = draft.with_adp(board, adp_df)
+        if has_ffc:
+            board = draft.with_ffc_adp(board, ffc_df)
+        board = draft.with_rookies(board, adp_df, ffc=ffc_df)
+        board = draft.with_hybrid_replacement(board, teams=teams)
+    board = draft.with_tiers(
+        board, teams=teams, starters=starters, flex_counts=flex_counts
+    )
+    if "bye_week" not in board.columns:
+        board["bye_week"] = pd.NA
+    missing_bye = board["bye_week"].isna() & board["team"].notna()
+    if missing_bye.any():
+        team_bye = projections.team_bye_weeks(schedule, season).set_index("team")["bye_week"]
+        board.loc[missing_bye, "bye_week"] = board.loc[missing_bye, "team"].map(team_bye)
+    return board
+
+
+def _build_sleeper_to_gsis(players_map: dict[str, dict]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for sid, meta in players_map.items():
+        gid = meta.get("gsis_id")
+        if gid:
+            out[sid] = gid
+    for team_abbr in dst.TEAM_NICKNAMES:
+        out[team_abbr] = f"DST-{team_abbr}"
+    return out
+
+
+def _render_draft_live(
+    board: pd.DataFrame,
+    picks: list[dict],
+    sleeper_to_gsis: dict[str, str],
+    my_user_id: str,
+    my_slot: int,
+    teams: int,
+    rounds: int,
+    starters: dict[str, int],
+    flex_counts: dict[str, int],
+    top_n: int,
+    favorite_team: str | None,
+    err: str | None,
+):
+    from rich.layout import Layout
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+
+    drafted_ids = draftlive.build_drafted_set(picks, sleeper_to_gsis)
+    my_pick_ids = draftlive.build_drafted_set(
+        [p for p in picks if p.get("picked_by") == my_user_id], sleeper_to_gsis
+    )
+    my_roster = board[board["player_id"].isin(my_pick_ids)]
+    my_positions = my_roster["position"].tolist()
+    total_picks = teams * rounds
+    current_pick = min(len(picks) + 1, total_picks)
+    round_n = draftlive.current_round(current_pick, teams)
+    on_the_clock = draftlive.slot_on_the_clock(current_pick, teams)
+    next_pick = draftlive.next_own_pick(current_pick, my_slot, teams, rounds)
+
+    wait_cost = draftlive.wait_cost_by_position(board, drafted_ids, next_pick)
+    need = draftlive.positional_need(my_positions, starters, flex_counts)
+    lock_out = ("K", "DST") if round_n < draftlive.K_DST_UNLOCK_ROUND else ()
+    scored = draftlive.score_candidates(board, drafted_ids, need, wait_cost, lock_out_positions=lock_out)
+    scored_all_pos = draftlive.score_candidates(board, drafted_ids, need, wait_cost)
+    top5 = scored.head(top_n)
+    top_pos = draftlive.top_per_position(scored_all_pos, board, drafted_ids, wait_cost)
+
+    # anchors: best player at each position on your roster
+    anchors_bye: dict[str, int] = {}
+    if not my_roster.empty:
+        for pos_key, grp in my_roster.groupby("position"):
+            best = grp.sort_values("projected_points", ascending=False).iloc[0]
+            if pd.notna(best.get("bye_week")):
+                anchors_bye[pos_key] = int(best["bye_week"])
+
+    def _draft_state_panel() -> Panel:
+        picks_away = (next_pick - current_pick) if next_pick else None
+        parts = [f"[bold]Round {round_n}[/bold]  ·  Pick {current_pick}  ·  Slot {on_the_clock} on the clock"]
+        if next_pick is not None:
+            parts.append(f"Your next pick: [bold cyan]{next_pick}[/bold cyan] ({picks_away} away)")
+        else:
+            parts.append("You are done drafting")
+        recent = picks[-3:]
+        for p in recent:
+            meta = p.get("metadata") or {}
+            name = f"{meta.get('first_name','?')} {meta.get('last_name','?')}"
+            pos = meta.get("position", "?")
+            team = meta.get("team", "?")
+            parts.append(f"  pick {p.get('pick_no')}: {name} ({pos}/{team})")
+        if err:
+            parts.append(f"[red]poll error: {err}[/red]")
+        return Panel("\n".join(parts), title="Draft", border_style="cyan")
+
+    def _roster_panel() -> Panel:
+        by_pos: dict[str, list[str]] = {}
+        for _, r in my_roster.iterrows():
+            bye = f"bye {int(r['bye_week'])}" if pd.notna(r.get("bye_week")) else "bye ?"
+            by_pos.setdefault(r["position"], []).append(
+                f"{r['player_display_name']} ({r['team']}, {bye})"
+            )
+        slot_order = ["QB", "RB", "WR", "TE", "K", "DST"]
+        lines = []
+        for pos in slot_order:
+            required = starters.get(pos, 0)
+            filled = by_pos.get(pos, [])
+            for i in range(max(required, len(filled))):
+                lines.append(f"  {pos:<4} {filled[i] if i < len(filled) else '—'}")
+        shortfall = draftlive.remaining_starter_slots(my_positions, starters, flex_counts)
+        if shortfall:
+            lines.append("")
+            lines.append("Still need: " + ", ".join(f"{n} {p}" for p, n in shortfall.items()))
+        else:
+            lines.append("")
+            lines.append("Starting lineup filled")
+        byes = [int(r["bye_week"]) for _, r in my_roster.iterrows() if pd.notna(r.get("bye_week"))]
+        if byes:
+            bye_counts: dict[int, int] = {}
+            for b in byes:
+                bye_counts[b] = bye_counts.get(b, 0) + 1
+            stacks = [f"W{w}×{n}" for w, n in sorted(bye_counts.items()) if n > 1]
+            if stacks:
+                lines.append("Bye stack: " + ", ".join(stacks))
+        return Panel("\n".join(lines) or "—", title="Your team", border_style="green")
+
+    def _pos_table() -> Panel:
+        t = Table.grid(padding=(0, 1))
+        t.add_column("pos", style="bold")
+        t.add_column("player"); t.add_column("team"); t.add_column("bye")
+        t.add_column("vbd", justify="right"); t.add_column("tier", justify="right")
+        t.add_column("wait", justify="right")
+        for _, r in top_pos.iterrows():
+            bye = str(int(r["bye_week"])) if pd.notna(r.get("bye_week")) else "?"
+            tier = str(int(r["tier"])) if pd.notna(r.get("tier")) else "?"
+            t.add_row(
+                r["position"], r["player_display_name"], str(r.get("team") or ""),
+                bye, f"{r.get('vbd', 0):.0f}", tier, f"{r.get('wait_cost', 0):.0f}"
+            )
+        return Panel(t, title="Best available by position", border_style="magenta")
+
+    def _top5_panel() -> Panel:
+        t = Table.grid(padding=(0, 1))
+        t.add_column("#", style="bold")
+        t.add_column("player"); t.add_column("pos"); t.add_column("team"); t.add_column("bye")
+        t.add_column("vbd", justify="right"); t.add_column("wait", justify="right")
+        t.add_column("fit", justify="right")
+        t.add_column("why")
+        for i, (_, r) in enumerate(top5.iterrows(), 1):
+            bye = str(int(r["bye_week"])) if pd.notna(r.get("bye_week")) else "?"
+            why = draftlive.explain_candidate(
+                r, starters, my_positions, anchors_bye, next_pick
+            )
+            t.add_row(
+                str(i), r["player_display_name"], r["position"], str(r.get("team") or ""),
+                bye, f"{r.get('vbd', 0):.0f}", f"{r.get('wait_cost', 0):.0f}",
+                f"{r.get('fit_score', 0):.0f}", why,
+            )
+        title = f"Top {top_n} for you"
+        if lock_out:
+            title += f"  (K/DST unlock at round {draftlive.K_DST_UNLOCK_ROUND})"
+        return Panel(t, title=title, border_style="yellow")
+
+    def _fav_panel() -> Panel | None:
+        if favorite_team is None:
+            return None
+        pick = draftlive.favorite_team_pick(board, drafted_ids, favorite_team)
+        if pick is None:
+            body = f"No {favorite_team} players remaining."
+        else:
+            top_leader_fit = float(top5.iloc[0]["fit_score"]) if not top5.empty else 0.0
+            fav_fit = float(pick.get("vbd", 0))
+            gap = top_leader_fit - fav_fit
+            bye = int(pick["bye_week"]) if pd.notna(pick.get("bye_week")) else "?"
+            body = (
+                f"{pick['player_display_name']}  {pick['position']}/{pick['team']}  "
+                f"vbd {pick.get('vbd', 0):.0f}  bye {bye}\n"
+                f"  {gap:.0f} points behind top overall fit"
+            )
+        return Panel(body, title=f"{favorite_team} watch", border_style="red")
+
+    layout = Layout()
+    sections = [
+        Layout(_draft_state_panel(), size=6, name="state"),
+        Layout(_roster_panel(), size=14, name="roster"),
+        Layout(_pos_table(), size=10, name="pos"),
+        Layout(_top5_panel(), size=10, name="top5"),
+    ]
+    fav = _fav_panel()
+    if fav is not None:
+        sections.append(Layout(fav, size=5, name="fav"))
+    layout.split_column(*sections)
+    return layout
+
+
+@app.command("draft-live")
+def draft_live_cmd(
+    league_id: Annotated[str, typer.Option("--league-id", help="Sleeper league ID")],
+    username: Annotated[str, typer.Option("--username", help="Your Sleeper display name")],
+    season: Annotated[int, typer.Option("--season", "-s")] = 2026,
+    draft_id: Annotated[
+        str | None,
+        typer.Option("--draft-id", help="Override auto-lookup from league_id"),
+    ] = None,
+    favorite_team: Annotated[
+        str | None,
+        typer.Option("--favorite-team", help="Team abbrev (e.g. SF) to always suggest an option from"),
+    ] = None,
+    poll: Annotated[int, typer.Option("--poll", help="Seconds between Sleeper API polls")] = 3,
+    top: Annotated[int, typer.Option("--top", help="Candidates in the Top-N panel")] = 5,
+    slot_override: Annotated[
+        int | None,
+        typer.Option("--slot", help="Manually set your draft slot if Sleeper hasn't assigned it yet"),
+    ] = None,
+    ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
+) -> None:
+    """Live-updating draft assistant: polls Sleeper and shows scored candidates in real time."""
+    import threading
+    import time
+
+    from rich.console import Console
+    from rich.live import Live
+
+    console = Console()
+
+    try:
+        if draft_id is None:
+            console.print(f"[cyan]Looking up latest draft for league {league_id}...[/cyan]")
+            draft_info = sleeper.latest_draft(league_id)
+            draft_id = draft_info["draft_id"]
+        else:
+            draft_info = sleeper.fetch_draft(draft_id)
+    except Exception as e:
+        raise typer.BadParameter(f"Could not resolve draft: {e}")
+    settings = draft_info.get("settings") or {}
+    teams = int(settings.get("teams") or 12)
+    rounds = int(settings.get("rounds") or 15)
+    console.print(f"[cyan]Draft {draft_id}: {teams} teams × {rounds} rounds ({draft_info.get('status')})[/cyan]")
+
+    try:
+        league, _rosters, users = sleeper.load_league_snapshot(league_id)
+    except FileNotFoundError:
+        raise typer.BadParameter(
+            f"No cached Sleeper snapshot for league {league_id}. "
+            f"Run `ffs fetch-sleeper-league --league-id {league_id}` first."
+        )
+    match = [u for u in users if u.get("display_name", "").lower() == username.lower()]
+    if not match:
+        available = ", ".join(u.get("display_name", "?") for u in users)
+        raise typer.BadParameter(f"No user {username!r} in league. Available: {available}")
+    my_user = match[0]
+    my_user_id = my_user["user_id"]
+
+    my_slot = slot_override or sleeper.user_draft_slot(draft_info, my_user_id)
+    if my_slot is None:
+        raise typer.BadParameter(
+            "Draft slot not assigned yet in Sleeper. Pass --slot N once you know it."
+        )
+    console.print(f"[cyan]You are {my_user.get('display_name')} at draft slot {my_slot}[/cyan]")
+
+    positions = league.get("roster_positions") or []
+    starters, flex_counts = draft.parse_sleeper_roster_positions(positions)
+    if not starters:
+        starters = draft.DEFAULT_STARTERS
+        flex_counts = draft.DEFAULT_FLEX_COUNTS
+        console.print("[yellow][warn] no roster_positions in league; defaults applied[/yellow]")
+    else:
+        console.print(f"[cyan]Roster: {_format_slots(starters, flex_counts)}[/cyan]")
+
+    console.print("[cyan]Building draft board (loading scored data + projections)...[/cyan]")
+    board = _build_draft_board(season, ruleset, teams, starters, flex_counts)
+
+    console.print("[cyan]Loading Sleeper player map...[/cyan]")
+    players_map = sleeper.load_or_fetch_players()
+    sleeper_to_gsis = _build_sleeper_to_gsis(players_map)
+
+    state = {"picks": [], "err": None}
+    lock = threading.Lock()
+    stop = threading.Event()
+
+    def poll_loop():
+        while not stop.is_set():
+            try:
+                new_picks = sleeper.fetch_draft_picks(draft_id) or []
+                with lock:
+                    state["picks"] = new_picks
+                    state["err"] = None
+            except Exception as e:
+                with lock:
+                    state["err"] = str(e)[:120]
+            stop.wait(poll)
+
+    def render():
+        with lock:
+            picks = list(state["picks"])
+            err = state["err"]
+        return _render_draft_live(
+            board, picks, sleeper_to_gsis, my_user_id, my_slot,
+            teams, rounds, starters, flex_counts, top, favorite_team, err,
+        )
+
+    poll_thread = threading.Thread(target=poll_loop, daemon=True)
+    poll_thread.start()
+
+    try:
+        with Live(render(), refresh_per_second=2, screen=True) as live:
+            while not stop.is_set():
+                time.sleep(0.5)
+                live.update(render())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop.set()
+    console.print("[cyan]Exited draft-live[/cyan]")
 
 
 if __name__ == "__main__":

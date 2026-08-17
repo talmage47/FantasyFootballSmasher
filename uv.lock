@@ -112,6 +112,7 @@ dependencies = [
     { name = "nflreadpy" },
     { name = "pandas" },
     { name = "pyarrow" },
+    { name = "rich" },
     { name = "typer" },
 ]
 
@@ -127,6 +128,7 @@ requires-dist = [
     { name = "nflreadpy", specifier = ">=0.1.5" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pyarrow", specifier = ">=15.0" },
+    { name = "rich", specifier = ">=13.7" },
     { name = "typer", specifier = ">=0.12" },
 ]
 

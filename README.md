@@ -63,6 +63,13 @@ produces draft boards and weekly lineup recommendations. Designed for a
   count of weeks the candidate would outproject the anchor are surfaced
   so you can identify true schedule complements (rather than just
   second-best-at-position).
+- `draftlive` — live draft assistant. Polls Sleeper's draft-picks
+  endpoint, maintains your roster and the remaining pool in memory,
+  and renders a `rich`-powered dashboard that scores available
+  candidates against your current roster (VBD adjusted for positional
+  need + urgency from ADP-implied wait cost). Auto-imports league
+  roster config (SUPER_FLEX / extra FLEX) from the cached Sleeper
+  league snapshot.
 
 ## Storage choices
 
@@ -160,6 +167,7 @@ Every command supports `--help` for full options.
 | `ffs draft --season Y [--teams 12] [--top 100] [--position P] [--after-pick N] [--sleepers \| --reaches] [--exclude-out] [--roster-slots ...] [--ruleset standard\|half_ppr\|ppr]` | VBD-ranked draft board across all positions, enriched with ADP if `adp.parquet` is present. Includes a `tier` column (per-position VBD-gap clusters) and a `bye_week` column. `--after-pick`, `--sleepers`, `--reaches` require ADP. `--exclude-out` drops currently-Out players. `--roster-slots QB=1,RB=2,WR=2,TE=1,FLEX=1,K=1,DST=1` overrides starters. `--ruleset` picks scoring rules. |
 | `ffs lineup --season Y --week W (--roster ROSTER.txt \| --league-id ID --username NAME) [--window 8] [--roster-slots ...] [--ruleset ...]` | Optimal starting lineup. Roster comes from a text file OR a cached Sleeper league snapshot. `--roster-slots` overrides starting slot mix. |
 | `ffs platoon --season Y --slot {RB\|WR\|TE\|FLEX} (--roster ROSTER.txt \| --league-id ID --username NAME) [--top 20] [--show-grid] [--ruleset ...]` | Rank unrostered players by the season points they add as a week-to-week platoon partner for your best roster player at `--slot`. `--show-grid` prints the week-by-week matchup grid for the anchor + top candidate. |
+| `ffs draft-live --league-id ID --username NAME [--season 2026] [--draft-id ID] [--favorite-team SF] [--poll 3] [--top 5] [--slot N]` | Live-updating draft assistant. Polls Sleeper's draft-picks endpoint every N seconds and renders a `rich` dashboard: draft state, your team, best available by position, top-N candidates scored against your current roster (VBD × need-multiplier + urgency from `wait_cost`), and an optional `--favorite-team` watch panel. Auto-detects your league's roster spec (including SUPER_FLEX) and your draft slot. K/DST are locked out of the top-N until round 8. |
 
 ## Typical workflows
 
@@ -201,6 +209,35 @@ uv run ffs fetch-depth-charts --season 2026 --force
 # Weekly start/sit for your roster
 uv run ffs lineup --season 2026 --week 5 --roster my_roster.txt
 ```
+
+### Live-draft day
+
+`ffs draft-live` is meant to run in a terminal alongside the Sleeper
+app on your phone or in a browser. It polls the Sleeper draft-picks
+endpoint every few seconds, maintains your roster in memory, and
+updates a `rich` dashboard in place — no re-running between picks.
+
+```bash
+# One-time (or refresh) — cache the league snapshot so roster config
+# (SUPER_FLEX etc.) and users can be resolved offline.
+uv run ffs fetch-sleeper-league --league-id 123456789 --username tal
+
+# Start the live assistant right before your draft.
+uv run ffs draft-live --league-id 123456789 --username tal --favorite-team SF
+```
+
+The dashboard has four panels (five with `--favorite-team`):
+draft state (round/pick/who's on the clock + last three picks), your
+team (one row per starter slot with bye weeks visible), best available
+by position, and top-N for you (sorted by `fit_score = vbd ×
+need_multiplier + urgency`). The last column of the top-N table is a
+short template explanation like "tier cliff (−28 VBD if you wait);
+fills WR starter need; W7 bye stacks 2 starters". K and DST are hidden
+from the top-N until round 8 so they don't clutter middle rounds.
+
+Roster spec (starters, extra FLEX, SUPER_FLEX, etc.) is imported
+automatically from Sleeper. If your draft slot hasn't been assigned in
+Sleeper yet, pass `--slot N` to override until it is.
 
 ### Platoon / streaming (draft & bench planning)
 
@@ -273,6 +310,7 @@ ffs/
   draft.py        # replacement_ranks, draft_rankings, with_adp
   lineup.py       # resolve_roster, optimize_lineup
   platoon.py      # platoon_value, platoon_grid
+  draftlive.py    # snake picks, positional_need, wait_cost, score_candidates
   cli.py          # typer app (all commands live here)
 ```
 
