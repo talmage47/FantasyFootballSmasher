@@ -22,6 +22,13 @@ produces draft boards and weekly lineup recommendations. Designed for a
   backups.
 - ADP (`data/raw/adp.parquet`) — FantasyPros redraft-overall ECR joined
   to `gsis_id` via `load_ff_playerids`.
+- FFC ADP (`data/raw/ffc_adp.parquet`) — Fantasy Football Calculator
+  ADP from real 12-team mock drafts, updated daily. Used as a second
+  market source alongside FantasyPros; also drives rookie projection
+  interpolation because FFC reflects actual draft behavior.
+- Sleeper league snapshot (`data/raw/sleeper/<league_id>/`) — league
+  settings, rosters, users, and cached global players.json. Underpins
+  `--league-id` roster loading and `ffs draft-live`.
 
 **Scoring:**
 - `ffs/scoring.py` defines rules as a dict of `{stat_column: multiplier}`.
@@ -55,6 +62,9 @@ produces draft boards and weekly lineup recommendations. Designed for a
 - `draft` — value-based drafting (VBD) with configurable league size,
   optionally enriched with market ADP so you can spot values vs reaches, and
   rookies interpolated in from the ADP file when a `gsis_id` can't be joined.
+  Supports arbitrary FLEX types (plain FLEX, WRRB_FLEX, REC_FLEX, SUPER_FLEX);
+  SUPER_FLEX slots weight replacement demand heavily to QB, which correctly
+  pushes elite QBs up ~10 spots on the board in superflex leagues.
 - `lineup` — greedy optimal starter selection from a roster of player
   names, given weekly projections.
 - `platoon` — for a chosen roster slot, ranks unrostered candidates by
@@ -118,6 +128,7 @@ uv run ffs fetch-rosters --season 2026    # current-team assignments
 uv run ffs fetch-depth-charts --season 2026  # starter / backup ordering
 uv run ffs fetch-injuries                 # weekly injury reports
 uv run ffs fetch-adp                      # FantasyPros consensus rankings
+uv run ffs fetch-ffc-adp                  # Fantasy Football Calculator ADP (real mock drafts)
 uv run ffs score                          # compute standard fantasy points (players + DST)
 ```
 
@@ -138,7 +149,8 @@ Every command supports `--help` for full options.
 | `ffs fetch-rosters ...` | Annual rosters. |
 | `ffs fetch-depth-charts ...` | Depth charts (all snapshots preserved). |
 | `ffs fetch-adp [--force]` | FantasyPros redraft-overall ECR, no season needed. |
-| `ffs fetch-sleeper-league --league-id ID [--username NAME]` | Cache Sleeper league snapshot (settings, rosters, users, players map). Optionally preview one user's roster. |
+| `ffs fetch-ffc-adp [--scoring standard\|half_ppr\|ppr] [--teams N] [--year Y] [--force]` | Fantasy Football Calculator ADP from real mock drafts, refreshed daily. Used as a second market signal and to interpolate rookie projections. |
+| `ffs fetch-sleeper-league --league-id ID [--username NAME]` | Cache Sleeper league snapshot (settings, rosters, users, players map). Optionally preview one user's roster. Enables `--league-id` roster loading and roster-spec auto-import for `draft` / `lineup` / `draft-live`. |
 
 ### Scoring / views
 
@@ -164,8 +176,8 @@ Every command supports `--help` for full options.
 | `ffs project --season Y --week W [--position P] [--window 8] [--top 25]` | Per-week projections: baseline PPG × opponent adjustment. |
 | `ffs project-season --season Y [--position P] [--window 17] [--top 40]` | Full-season projections (sums weekly projections). Includes a `bye_week` column. |
 | `ffs schedule-player --season Y --player NAME` | Week-by-week matchup grid for one player: opponent, opp_factor, game_env_factor, week_projection. |
-| `ffs draft --season Y [--teams 12] [--top 100] [--position P] [--after-pick N] [--sleepers \| --reaches] [--exclude-out] [--roster-slots ...] [--ruleset standard\|half_ppr\|ppr]` | VBD-ranked draft board across all positions, enriched with ADP if `adp.parquet` is present. Includes a `tier` column (per-position VBD-gap clusters) and a `bye_week` column. `--after-pick`, `--sleepers`, `--reaches` require ADP. `--exclude-out` drops currently-Out players. `--roster-slots QB=1,RB=2,WR=2,TE=1,FLEX=1,K=1,DST=1` overrides starters. `--ruleset` picks scoring rules. |
-| `ffs lineup --season Y --week W (--roster ROSTER.txt \| --league-id ID --username NAME) [--window 8] [--roster-slots ...] [--ruleset ...]` | Optimal starting lineup. Roster comes from a text file OR a cached Sleeper league snapshot. `--roster-slots` overrides starting slot mix. |
+| `ffs draft --season Y [--teams 12] [--top 100] [--position P] [--after-pick N] [--sleepers \| --reaches] [--exclude-out] [--roster-slots ...] [--league-id ID] [--ruleset standard\|half_ppr\|ppr]` | VBD-ranked draft board across all positions, enriched with FantasyPros + FFC ADP when present. Includes a `tier` column (per-position VBD-gap clusters) and a `bye_week` column. `--after-pick`, `--sleepers`, `--reaches` require ADP. `--exclude-out` drops currently-Out players. `--roster-slots QB=1,RB=2,WR=2,TE=1,FLEX=2,SUPER_FLEX=1,K=1,DST=1` overrides starters (SUPER_FLEX, WRRB_FLEX, REC_FLEX all supported). `--league-id ID` auto-imports the starter/flex spec from a cached Sleeper league (see `fetch-sleeper-league`) — no need to type `--roster-slots` for your own league. |
+| `ffs lineup --season Y --week W (--roster ROSTER.txt \| --league-id ID --username NAME) [--window 8] [--roster-slots ...] [--ruleset ...]` | Optimal starting lineup. Roster comes from a text file OR a cached Sleeper league snapshot. When `--league-id` is used, starter spec (SUPER_FLEX etc.) auto-imports from the league unless `--roster-slots` overrides. |
 | `ffs platoon --season Y --slot {RB\|WR\|TE\|FLEX} (--roster ROSTER.txt \| --league-id ID --username NAME) [--top 20] [--show-grid] [--ruleset ...]` | Rank unrostered players by the season points they add as a week-to-week platoon partner for your best roster player at `--slot`. `--show-grid` prints the week-by-week matchup grid for the anchor + top candidate. |
 | `ffs draft-live --league-id ID --username NAME [--season 2026] [--draft-id ID] [--favorite-team SF] [--poll 3] [--top 5] [--slot N]` | Live-updating draft assistant. Polls Sleeper's draft-picks endpoint every N seconds and renders a `rich` dashboard: draft state, your team, best available by position, top-N candidates scored against your current roster (VBD × need-multiplier + urgency from `wait_cost`), and an optional `--favorite-team` watch panel. Auto-detects your league's roster spec (including SUPER_FLEX) and your draft slot. K/DST are locked out of the top-N until round 8. |
 
@@ -302,15 +314,18 @@ Trey McBride
 ffs/
   config.py       # data paths, DEFAULT_SEASONS
   ingest.py       # fetch/save/load for every data source
-  scoring.py      # ScoringRules dataclass + STANDARD ruleset
+  scoring.py      # ScoringRules dataclass + STANDARD / half_ppr / ppr rulesets
+  dst.py          # score_dst — team-defense scoring from per-team weekly stats
   career.py       # load_scored, rolling views, career aggregates
-  matchups.py     # points_allowed_by_game, defense_ranking
+  matchups.py     # points_allowed_by_game, defense_ranking, yards_allowed_by_game
   sos.py          # opponents_by_team, team_sos
-  projections.py  # player_baseline, project_week, project_season
-  draft.py        # replacement_ranks, draft_rankings, with_adp
+  injuries.py     # latest_injuries_per_player, availability_factor
+  projections.py  # player_baseline, project_week, project_weekly, project_season
+  draft.py        # replacement_ranks, draft_rankings, with_adp, FLEX/SUPER_FLEX
   lineup.py       # resolve_roster, optimize_lineup
   platoon.py      # platoon_value, platoon_grid
   draftlive.py    # snake picks, positional_need, wait_cost, score_candidates
+  sleeper.py      # Sleeper API client + league/draft snapshot loaders
   cli.py          # typer app (all commands live here)
 ```
 
@@ -340,12 +355,14 @@ scoring format is a new dict, not a new class hierarchy.
   the per-game std-dev of a player's last N games (multiplied by
   √games for season-level projections). This is a rough boom-bust
   hint, not a probability distribution.
-- **Sleeper integration is read-only and roster-only** — `ffs
+- **Sleeper integration is read-only** — writes (setting your lineup,
+  making picks, sending messages) are not supported. `ffs
   fetch-sleeper-league` caches league settings, rosters, users, and
-  the player map; `ffs lineup` can then use `--league-id ID --username
-  NAME` instead of a roster text file. League scoring rules and
-  starting-slot config are NOT yet auto-imported — defaults still
-  apply (standard scoring, 1QB/2RB/2WR/1TE/1FLEX/K/DST).
+  the player map. `draft`, `lineup`, and `draft-live` all accept
+  `--league-id` and auto-import your league's starter/flex spec
+  (including SUPER_FLEX, WRRB_FLEX, and REC_FLEX). League scoring
+  rules (custom PPR fractions, TE-premium, etc.) are NOT yet imported
+  — `--ruleset` still picks between standard/half_ppr/ppr manually.
 - **Some model outliers to investigate** before treating the draft
   board as gospel — see the `adp_delta` column and the notes in the
   project memory.
