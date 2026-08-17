@@ -29,6 +29,33 @@ def fetch_users(league_id: str) -> list[dict]:
     return _get_json(f"{API_BASE}/league/{league_id}/users")
 
 
+def fetch_league_drafts(league_id: str) -> list[dict]:
+    return _get_json(f"{API_BASE}/league/{league_id}/drafts")
+
+
+def fetch_draft(draft_id: str) -> dict:
+    return _get_json(f"{API_BASE}/draft/{draft_id}")
+
+
+def fetch_draft_picks(draft_id: str) -> list[dict]:
+    return _get_json(f"{API_BASE}/draft/{draft_id}/picks")
+
+
+def latest_draft(league_id: str) -> dict:
+    """Return the most recent draft for the league (most in-season use has one)."""
+    drafts = fetch_league_drafts(league_id)
+    if not drafts:
+        raise ValueError(f"No drafts found for league {league_id}")
+    return max(drafts, key=lambda d: d.get("start_time") or 0)
+
+
+def user_draft_slot(draft: dict, user_id: str) -> int | None:
+    """Return the 1-indexed draft slot for a user in this draft, or None if unassigned."""
+    order = draft.get("draft_order") or {}
+    slot = order.get(user_id)
+    return int(slot) if slot is not None else None
+
+
 def fetch_players() -> dict[str, dict]:
     """The full NFL player map. ~5MB — cache aggressively."""
     return _get_json(f"{API_BASE}/players/nfl")
