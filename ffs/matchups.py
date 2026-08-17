@@ -27,6 +27,24 @@ def points_allowed_by_game(
     return grouped
 
 
+def yards_allowed_by_game(
+    scored_df: pd.DataFrame, regular_season_only: bool = True
+) -> pd.DataFrame:
+    """One row per (season, week, defense): total rushing + passing yards allowed."""
+    df = scored_df
+    if regular_season_only and "season_type" in df.columns:
+        df = df[df["season_type"] == "REG"]
+    return (
+        df.groupby(["season", "week", "opponent_team"], dropna=False)
+        .agg(
+            rushing_yds_allowed=("rushing_yards", "sum"),
+            passing_yds_allowed=("passing_yards", "sum"),
+        )
+        .reset_index()
+        .rename(columns={"opponent_team": "defense"})
+    )
+
+
 def defense_ranking(
     scored_df: pd.DataFrame,
     season: int,
@@ -49,4 +67,20 @@ def defense_ranking(
     league_avg = agg["fp_allowed_pg"].mean()
     agg["vs_league"] = agg["fp_allowed_pg"] - league_avg
     agg["rank_easiest"] = agg["fp_allowed_pg"].rank(ascending=False, method="min").astype(int)
+
+    yards = yards_allowed_by_game(scored_df)
+    yards = yards[yards["season"] == season]
+    if last_n_weeks is not None:
+        max_week = yards["week"].max()
+        yards = yards[yards["week"] > max_week - last_n_weeks]
+    yards_pg = (
+        yards.groupby("defense")
+        .agg(
+            rushing_yds_allowed_pg=("rushing_yds_allowed", "mean"),
+            passing_yds_allowed_pg=("passing_yds_allowed", "mean"),
+        )
+        .reset_index()
+    )
+    agg = agg.merge(yards_pg, on="defense", how="left")
+
     return agg.sort_values("fp_allowed_pg", ascending=False).reset_index(drop=True)

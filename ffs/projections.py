@@ -394,7 +394,7 @@ def _apply_injuries(
     return out
 
 
-def project_season(
+def project_weekly(
     scored_df: pd.DataFrame,
     schedule_df: pd.DataFrame,
     target_season: int,
@@ -405,13 +405,11 @@ def project_season(
     rosters_df: pd.DataFrame | None = None,
     depth_charts_df: pd.DataFrame | None = None,
     depth_limits: dict[str, int] = DEFAULT_DEPTH_LIMITS,
-    injuries_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Project a full regular season by summing opponent-adjusted weekly projections.
+    """Per-player-per-week projections across the full target season.
 
-    Baseline is a weighted blend across the last N seasons (see
-    `player_season_baseline`), which regresses one-off career years and rebounds
-    off-years toward a truer talent estimate.
+    Returns long-format rows: player_id, player_display_name, position, team,
+    week, opponent, opp_factor, game_env_factor, baseline_ppg, week_projection.
     """
     if rankings_season is None:
         rankings_season = target_season - 1
@@ -432,6 +430,10 @@ def project_season(
     team_weeks = team_weeks[team_weeks["season"] == target_season]
     game_env = _game_env_factor_by_team_week(schedule_df, target_season)
 
+    out_cols = [
+        "player_id", "player_display_name", "position", "team", "week",
+        "opponent", "opp_factor", "game_env_factor", "baseline_ppg", "week_projection",
+    ]
     frames = []
     for pos in positions:
         pos_baselines = baselines[baselines["position"] == pos]
@@ -464,24 +466,79 @@ def project_season(
         joined["week_projection"] = (
             joined["baseline_ppg"] * joined["opp_factor"] * joined["game_env_factor"]
         )
-        season_totals = (
-            joined.groupby(
-                ["player_id", "player_display_name", "position", "team"], dropna=False
-            )
-            .agg(
-                games=("week", "count"),
-                projected_points=("week_projection", "sum"),
-                avg_opp_factor=("opp_factor", "mean"),
-                avg_game_env=("game_env_factor", "mean"),
-            )
-            .reset_index()
-        )
-        season_totals["ppg"] = (
-            season_totals["projected_points"] / season_totals["games"]
-        )
-        frames.append(season_totals)
+        frames.append(joined)
 
-    result = pd.concat(frames, ignore_index=True).dropna(subset=["projected_points"])
+    if not frames:
+        return pd.DataFrame(columns=out_cols)
+    result = pd.concat(frames, ignore_index=True)
+    return result[out_cols]
+
+
+def team_bye_weeks(
+    schedule_df: pd.DataFrame, season: int, max_week: int = 18
+) -> pd.DataFrame:
+    """Per-team bye week: the missing week 1..max_week from the regular-season schedule."""
+    df = schedule_df[schedule_df["season"] == season]
+    if "game_type" in df.columns:
+        df = df[df["game_type"] == "REG"]
+    teams = pd.unique(pd.concat([df["home_team"], df["away_team"]]).dropna())
+    rows = []
+    for team in teams:
+        played = set(df.loc[(df["home_team"] == team) | (df["away_team"] == team), "week"])
+        for w in range(1, max_week + 1):
+            if w not in played:
+                rows.append({"team": team, "bye_week": w})
+                break
+    return pd.DataFrame(rows, columns=["team", "bye_week"])
+
+
+def project_season(
+    scored_df: pd.DataFrame,
+    schedule_df: pd.DataFrame,
+    target_season: int,
+    season_weights: tuple[float, ...] = DEFAULT_SEASON_WEIGHTS,
+    rankings_season: int | None = None,
+    positions: tuple[str, ...] = matchups.PROJECTABLE_POSITIONS,
+    min_recent_games: int = 3,
+    rosters_df: pd.DataFrame | None = None,
+    depth_charts_df: pd.DataFrame | None = None,
+    depth_limits: dict[str, int] = DEFAULT_DEPTH_LIMITS,
+    injuries_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Project a full regular season by summing opponent-adjusted weekly projections.
+
+    Baseline is a weighted blend across the last N seasons (see
+    `player_season_baseline`), which regresses one-off career years and rebounds
+    off-years toward a truer talent estimate.
+    """
+    weekly = project_weekly(
+        scored_df,
+        schedule_df,
+        target_season=target_season,
+        season_weights=season_weights,
+        rankings_season=rankings_season,
+        positions=positions,
+        min_recent_games=min_recent_games,
+        rosters_df=rosters_df,
+        depth_charts_df=depth_charts_df,
+        depth_limits=depth_limits,
+    )
+    season_totals = (
+        weekly.groupby(
+            ["player_id", "player_display_name", "position", "team"], dropna=False
+        )
+        .agg(
+            games=("week", "count"),
+            projected_points=("week_projection", "sum"),
+            avg_opp_factor=("opp_factor", "mean"),
+            avg_game_env=("game_env_factor", "mean"),
+        )
+        .reset_index()
+    )
+    season_totals["ppg"] = (
+        season_totals["projected_points"] / season_totals["games"]
+    )
+    result = season_totals.dropna(subset=["projected_points"])
     import numpy as np
     sigma = player_sigma_ppg(scored_df, up_to=(target_season - 1, 99), window=34)
     result = result.merge(sigma, on="player_id", how="left")
@@ -501,4 +558,6 @@ def project_season(
                     result[col] = result[col] * factor
     else:
         result["injury_status"] = pd.NA
+    byes = team_bye_weeks(schedule_df, target_season)
+    result = result.merge(byes, on="team", how="left")
     return result.sort_values("projected_points", ascending=False).reset_index(drop=True)

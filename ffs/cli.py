@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
+import pandas as pd
 import typer
 
 from pathlib import Path
@@ -547,6 +548,35 @@ def project_season_cmd(
     typer.echo(result[cols].head(top).to_string(index=False))
 
 
+@app.command("schedule-player")
+def schedule_player_cmd(
+    season: Annotated[int, typer.Option("--season", "-s")],
+    player: Annotated[str, typer.Option("--player", help="Player display name (fuzzy match)")],
+    ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
+) -> None:
+    """Print week-by-week projections for a single player across the target season."""
+    scored, schedule, rosters_df, depth_charts_df, _ = _load_projection_inputs(season, ruleset)
+    weekly = projections.project_weekly(
+        scored,
+        schedule,
+        target_season=season,
+        rosters_df=rosters_df,
+        depth_charts_df=depth_charts_df,
+    )
+    if weekly.empty:
+        raise typer.BadParameter("No weekly projections available for this season")
+    players_df = weekly[["player_id", "player_display_name"]].drop_duplicates()
+    matched, unmatched = lineup.resolve_roster(players_df, [player])
+    if unmatched or matched.empty:
+        raise typer.BadParameter(f"no player matching {player!r}")
+    pid = matched.iloc[0]["player_id"]
+    name = matched.iloc[0]["player_display_name"]
+    rows = weekly[weekly["player_id"] == pid].sort_values("week")
+    cols = ["week", "opponent", "opp_factor", "game_env_factor", "week_projection"]
+    typer.echo(f"{name} — {season} weekly schedule")
+    typer.echo(rows[cols].to_string(index=False))
+
+
 @app.command("draft")
 def draft_cmd(
     season: Annotated[int, typer.Option("--season", "-s")],
@@ -618,6 +648,13 @@ def draft_cmd(
             board = draft.with_ffc_adp(board, ffc_df)
     board = draft.with_tiers(board, teams=teams, starters=starters, flex_starters=flex_starters)
 
+    if "bye_week" not in board.columns:
+        board["bye_week"] = pd.NA
+    missing_bye = board["bye_week"].isna() & board["team"].notna()
+    if missing_bye.any():
+        team_bye = projections.team_bye_weeks(schedule, season).set_index("team")["bye_week"]
+        board.loc[missing_bye, "bye_week"] = board.loc[missing_bye, "team"].map(team_bye)
+
     if exclude_out:
         if "injury_status" in board.columns:
             board = board[board["injury_status"] != "Out"]
@@ -643,11 +680,11 @@ def draft_cmd(
 
     if has_adp:
         cols = ["overall_rank", "player_display_name", "position", "team", "pos_rank",
-                "tier", "floor", "projected_points", "ceiling", "vbd",
+                "tier", "bye_week", "floor", "projected_points", "ceiling", "vbd",
                 "adp", "adp_delta", "ffc_adp", "ffc_delta", "is_rookie", "injury_status"]
     else:
         cols = ["overall_rank", "player_display_name", "position", "team", "pos_rank",
-                "tier", "floor", "projected_points", "ceiling", "vbd",
+                "tier", "bye_week", "floor", "projected_points", "ceiling", "vbd",
                 "replacement_pts", "injury_status"]
     cols = [c for c in cols if c in board.columns]
 
