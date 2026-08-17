@@ -4,8 +4,9 @@ import re
 
 import pandas as pd
 
+from ffs.draft import FLEX_ELIGIBILITY
+
 DEFAULT_LINEUP: dict[str, int] = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DST": 1}
-FLEX_POSITIONS: tuple[str, ...] = ("RB", "WR", "TE")
 
 
 def _normalize(name: str) -> str:
@@ -44,34 +45,41 @@ def resolve_roster(
 def optimize_lineup(
     roster_projections: pd.DataFrame,
     slots: dict[str, int] = DEFAULT_LINEUP,
-    flex_positions: tuple[str, ...] = FLEX_POSITIONS,
+    flex_eligibility: dict[str, tuple[str, ...]] = FLEX_ELIGIBILITY,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return (starters, bench). Starters gains a `slot` column."""
+    """Return (starters, bench). Starters gains a `slot` column.
+
+    Fills position-locked slots first, then flex slots in order of increasing
+    eligibility (most restrictive first) so SUPER_FLEX doesn't steal a QB from
+    a dedicated WRRB_FLEX pool, etc.
+    """
     available = roster_projections.sort_values("projection", ascending=False).copy()
     used_ids: set = set()
     starter_rows: list[dict] = []
 
-    for pos, n in slots.items():
-        if pos == "FLEX":
+    for slot_name, n in slots.items():
+        if slot_name in flex_eligibility:
             continue
         pool = available[
-            (available["position"] == pos) & (~available["player_id"].isin(used_ids))
+            (available["position"] == slot_name) & (~available["player_id"].isin(used_ids))
         ].head(n)
         for _, row in pool.iterrows():
             r = row.to_dict()
-            r["slot"] = pos
+            r["slot"] = slot_name
             starter_rows.append(r)
             used_ids.add(row["player_id"])
 
-    flex_n = slots.get("FLEX", 0)
-    if flex_n:
-        flex_pool = available[
-            available["position"].isin(flex_positions)
+    flex_slots = [(name, n) for name, n in slots.items() if name in flex_eligibility]
+    flex_slots.sort(key=lambda x: len(flex_eligibility[x[0]]))
+    for slot_name, n in flex_slots:
+        eligible = flex_eligibility[slot_name]
+        pool = available[
+            available["position"].isin(eligible)
             & (~available["player_id"].isin(used_ids))
-        ].head(flex_n)
-        for _, row in flex_pool.iterrows():
+        ].head(n)
+        for _, row in pool.iterrows():
             r = row.to_dict()
-            r["slot"] = "FLEX"
+            r["slot"] = slot_name
             starter_rows.append(r)
             used_ids.add(row["player_id"])
 

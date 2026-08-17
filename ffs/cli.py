@@ -16,22 +16,49 @@ from ffs import (
 app = typer.Typer(help="Fantasy Football Smasher", no_args_is_help=True)
 
 
-def _parse_roster_slots(spec: str | None) -> dict[str, int] | None:
-    """Parse e.g. 'QB=1,RB=2,WR=2,TE=1,FLEX=1,K=1,DST=1' into a dict."""
+def _parse_roster_slots(
+    spec: str | None,
+) -> tuple[dict[str, int], dict[str, int]] | None:
+    """Parse e.g. 'QB=1,RB=2,WR=2,TE=1,FLEX=2,SUPER_FLEX=1,K=1,DST=1' into
+    (starters, flex_counts). Returns None if spec is None."""
     if spec is None:
         return None
-    slots: dict[str, int] = {}
+    starters: dict[str, int] = {}
+    flex_counts: dict[str, int] = {}
     for chunk in spec.split(","):
         if "=" not in chunk:
-            raise typer.BadParameter(
-                f"Bad --roster-slots entry {chunk!r}; expected POS=N"
-            )
+            raise typer.BadParameter(f"Bad --roster-slots entry {chunk!r}; expected POS=N")
         k, v = chunk.split("=", 1)
+        key = k.strip().upper()
         try:
-            slots[k.strip().upper()] = int(v)
+            n = int(v)
         except ValueError:
             raise typer.BadParameter(f"Bad slot count in {chunk!r}")
-    return slots
+        if key in draft.FLEX_ELIGIBILITY:
+            flex_counts[key] = n
+        else:
+            starters[key] = n
+    return starters, flex_counts
+
+
+def _load_league_slot_config(
+    league_id: str,
+) -> tuple[dict[str, int], dict[str, int]] | None:
+    """Return (starters, flex_counts) parsed from the cached Sleeper league."""
+    try:
+        league, _rosters, _users = sleeper.load_league_snapshot(league_id)
+    except FileNotFoundError:
+        return None
+    positions = league.get("roster_positions") or []
+    if not positions:
+        return None
+    return draft.parse_sleeper_roster_positions(positions)
+
+
+def _format_slots(starters: dict[str, int], flex_counts: dict[str, int]) -> str:
+    parts = [f"{n}{p}" for p, n in starters.items()]
+    parts.extend(f"{n}{name}" for name, n in flex_counts.items())
+    return " / ".join(parts)
 
 
 def _resolve_seasons(
@@ -635,8 +662,12 @@ def draft_cmd(
         str | None,
         typer.Option(
             "--roster-slots",
-            help="Override starters, e.g. QB=1,RB=2,WR=2,TE=1,FLEX=1,K=1,DST=1",
+            help="Override starters, e.g. QB=1,RB=2,WR=2,TE=1,FLEX=2,SUPER_FLEX=1,K=1,DST=1",
         ),
+    ] = None,
+    league_id: Annotated[
+        str | None,
+        typer.Option("--league-id", help="Import starters/flex config from a cached Sleeper league"),
     ] = None,
     ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
 ) -> None:
@@ -644,13 +675,19 @@ def draft_cmd(
     if sleepers and reaches:
         raise typer.BadParameter("--sleepers and --reaches are mutually exclusive")
 
-    starters_spec = _parse_roster_slots(roster_slots)
-    if starters_spec is not None:
-        flex_starters = starters_spec.pop("FLEX", 0)
-        starters = starters_spec
+    override = _parse_roster_slots(roster_slots)
+    league_slots = _load_league_slot_config(league_id) if league_id else None
+    if override is not None:
+        starters, flex_counts = override
+    elif league_slots is not None:
+        starters, flex_counts = league_slots
+        typer.echo(
+            f"[sleeper] Using roster config from league {league_id}: "
+            f"{_format_slots(starters, flex_counts)}"
+        )
     else:
         starters = draft.DEFAULT_STARTERS
-        flex_starters = draft.DEFAULT_FLEX_STARTERS
+        flex_counts = draft.DEFAULT_FLEX_COUNTS
 
     scored, schedule, rosters_df, depth_charts_df, injuries_df = _load_projection_inputs(season, ruleset)
     season_proj = projections.project_season(
@@ -662,7 +699,7 @@ def draft_cmd(
         injuries_df=injuries_df,
     )
     board = draft.draft_rankings(
-        season_proj, teams=teams, starters=starters, flex_starters=flex_starters
+        season_proj, teams=teams, starters=starters, flex_counts=flex_counts
     )
     has_adp = config.adp_path().exists()
     has_ffc = config.ffc_adp_path().exists()
@@ -681,7 +718,7 @@ def draft_cmd(
         )
         if has_ffc:
             board = draft.with_ffc_adp(board, ffc_df)
-    board = draft.with_tiers(board, teams=teams, starters=starters, flex_starters=flex_starters)
+    board = draft.with_tiers(board, teams=teams, starters=starters, flex_counts=flex_counts)
 
     if "bye_week" not in board.columns:
         board["bye_week"] = pd.NA
@@ -723,9 +760,7 @@ def draft_cmd(
                 "replacement_pts", "injury_status"]
     cols = [c for c in cols if c in board.columns]
 
-    slot_pretty = " / ".join(f"{n}{p}" for p, n in starters.items())
-    if flex_starters:
-        slot_pretty += f" / {flex_starters}FLEX"
+    slot_pretty = _format_slots(starters, flex_counts)
     header = f"Draft board — {season}, {teams}-team league ({slot_pretty}, {ruleset})"
     filters = []
     if position:
@@ -800,7 +835,23 @@ def lineup_cmd(
     if matched.empty:
         raise typer.Exit(1)
 
-    slots_spec = _parse_roster_slots(roster_slots) or lineup.DEFAULT_LINEUP
+    override = _parse_roster_slots(roster_slots)
+    if override is not None:
+        starters_dict, flex_counts = override
+        slots_spec = {**starters_dict, **flex_counts}
+    elif league_id is not None:
+        league_slots = _load_league_slot_config(league_id)
+        if league_slots is not None:
+            starters_dict, flex_counts = league_slots
+            slots_spec = {**starters_dict, **flex_counts}
+            typer.echo(
+                f"[sleeper] Using roster config from league {league_id}: "
+                f"{_format_slots(starters_dict, flex_counts)}"
+            )
+        else:
+            slots_spec = lineup.DEFAULT_LINEUP
+    else:
+        slots_spec = lineup.DEFAULT_LINEUP
     starters, bench = lineup.optimize_lineup(matched, slots=slots_spec)
     total = starters["projection"].sum()
     typer.echo(

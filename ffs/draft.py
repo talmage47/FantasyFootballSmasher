@@ -7,25 +7,74 @@ import numpy as np
 import pandas as pd
 
 DEFAULT_STARTERS: dict[str, int] = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DST": 1}
-DEFAULT_FLEX_POSITIONS: tuple[str, ...] = ("RB", "WR", "TE")
-DEFAULT_FLEX_STARTERS: int = 1
+DEFAULT_FLEX_COUNTS: dict[str, int] = {"FLEX": 1}
 ROOKIE_POSITIONS: tuple[str, ...] = ("QB", "RB", "WR", "TE")
+
+# Which positions can fill each flex-slot type.
+FLEX_ELIGIBILITY: dict[str, tuple[str, ...]] = {
+    "FLEX": ("RB", "WR", "TE"),
+    "WRRB_FLEX": ("RB", "WR"),
+    "REC_FLEX": ("WR", "TE"),
+    "SUPER_FLEX": ("QB", "RB", "WR", "TE"),
+}
+
+# How each flex type's replacement demand distributes across eligible positions.
+# FLEX and its restricted variants split evenly. SUPER_FLEX weights almost
+# entirely to QB — in practice ~90% of superflex slots are filled by QBs
+# because QB scoring dominates other eligible positions.
+FLEX_DEMAND_WEIGHTS: dict[str, dict[str, float]] = {
+    "FLEX": {"RB": 1/3, "WR": 1/3, "TE": 1/3},
+    "WRRB_FLEX": {"RB": 0.5, "WR": 0.5},
+    "REC_FLEX": {"WR": 0.5, "TE": 0.5},
+    "SUPER_FLEX": {"QB": 0.9, "RB": 1/30, "WR": 1/30, "TE": 1/30},
+}
+
+# Sleeper's roster_positions slot names → our internal slot names.
+_SLEEPER_SLOT_ALIASES: dict[str, str] = {
+    "QB": "QB", "RB": "RB", "WR": "WR", "TE": "TE", "K": "K",
+    "DEF": "DST",
+    "FLEX": "FLEX",
+    "SUPER_FLEX": "SUPER_FLEX", "SUPERFLEX": "SUPER_FLEX",
+    "WRRB_FLEX": "WRRB_FLEX", "WRRB": "WRRB_FLEX",
+    "REC_FLEX": "REC_FLEX", "WRTE_FLEX": "REC_FLEX",
+}
+_NON_STARTING_SLOTS: frozenset[str] = frozenset({"BN", "IR", "TAXI"})
+
+
+def parse_sleeper_roster_positions(
+    roster_positions: list[str],
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Split Sleeper's roster_positions list into (starters, flex_counts)."""
+    starters: dict[str, int] = {}
+    flex_counts: dict[str, int] = {}
+    for slot in roster_positions:
+        if slot in _NON_STARTING_SLOTS:
+            continue
+        mapped = _SLEEPER_SLOT_ALIASES.get(slot)
+        if mapped is None:
+            continue  # unknown IDP or league-specific slot — skip silently
+        if mapped in FLEX_ELIGIBILITY:
+            flex_counts[mapped] = flex_counts.get(mapped, 0) + 1
+        else:
+            starters[mapped] = starters.get(mapped, 0) + 1
+    return starters, flex_counts
 
 
 def replacement_ranks(
     teams: int,
     starters: dict[str, int] = DEFAULT_STARTERS,
-    flex_positions: tuple[str, ...] = DEFAULT_FLEX_POSITIONS,
-    flex_starters: int = DEFAULT_FLEX_STARTERS,
+    flex_counts: dict[str, int] = DEFAULT_FLEX_COUNTS,
 ) -> dict[str, int]:
     """Nth-ranked player per position who represents replacement level."""
     ranks: dict[str, int] = {}
-    flex_share = teams * flex_starters / len(flex_positions)
     for pos, n_starters in starters.items():
-        base = n_starters * teams
-        if pos in flex_positions:
-            base += round(flex_share)
-        ranks[pos] = int(base)
+        ranks[pos] = int(n_starters * teams)
+    for flex_type, count in flex_counts.items():
+        weights = FLEX_DEMAND_WEIGHTS.get(flex_type)
+        if weights is None:
+            continue
+        for pos, w in weights.items():
+            ranks[pos] = ranks.get(pos, 0) + round(count * teams * w)
     return ranks
 
 
@@ -33,11 +82,10 @@ def draft_rankings(
     season_projections: pd.DataFrame,
     teams: int = 12,
     starters: dict[str, int] = DEFAULT_STARTERS,
-    flex_positions: tuple[str, ...] = DEFAULT_FLEX_POSITIONS,
-    flex_starters: int = DEFAULT_FLEX_STARTERS,
+    flex_counts: dict[str, int] = DEFAULT_FLEX_COUNTS,
 ) -> pd.DataFrame:
     """Value-based draft rankings across positions."""
-    ranks = replacement_ranks(teams, starters, flex_positions, flex_starters)
+    ranks = replacement_ranks(teams, starters, flex_counts)
     frames = []
     for pos, replacement_rank in ranks.items():
         pos_df = (
@@ -287,8 +335,7 @@ def with_tiers(
     rankings: pd.DataFrame,
     teams: int = 12,
     starters: dict[str, int] = DEFAULT_STARTERS,
-    flex_positions: tuple[str, ...] = DEFAULT_FLEX_POSITIONS,
-    flex_starters: int = DEFAULT_FLEX_STARTERS,
+    flex_counts: dict[str, int] = DEFAULT_FLEX_COUNTS,
     gap_multiplier: float = 1.5,
 ) -> pd.DataFrame:
     """Add a `tier` column: consecutive players at a position, split on unusually large VBD gaps.
@@ -298,7 +345,7 @@ def with_tiers(
     The median is taken over the top 2× replacement-rank players so deep-bench noise
     doesn't dominate. Tiers are numbered 1..N within each position.
     """
-    ranks = replacement_ranks(teams, starters, flex_positions, flex_starters)
+    ranks = replacement_ranks(teams, starters, flex_counts)
     out = rankings.copy()
     out["tier"] = pd.NA
 
