@@ -10,7 +10,7 @@ from pathlib import Path
 from ffs import career as career_mod
 from ffs import (
     config, draft, dst, ingest, injuries as injuries_mod,
-    lineup, matchups, projections, scoring, sleeper, sos,
+    lineup, matchups, platoon as platoon_mod, projections, scoring, sleeper, sos,
 )
 
 app = typer.Typer(help="Fantasy Football Smasher", no_args_is_help=True)
@@ -474,6 +474,41 @@ def project(
     typer.echo(result[cols].head(top).to_string(index=False))
 
 
+def _resolve_roster_names(
+    roster: Path | None, league_id: str | None, username: str | None
+) -> list[str]:
+    """Load roster player names from a text file OR a cached Sleeper snapshot."""
+    if roster is None and league_id is None:
+        raise typer.BadParameter("Provide either --roster FILE or --league-id ID (with --username)")
+    if roster is not None and league_id is not None:
+        raise typer.BadParameter("--roster and --league-id are mutually exclusive")
+    if roster is not None:
+        if not roster.exists():
+            raise typer.BadParameter(f"Roster file not found: {roster}")
+        names = [line.strip() for line in roster.read_text().splitlines() if line.strip()]
+        if not names:
+            raise typer.BadParameter("Empty roster file")
+        return names
+    if username is None:
+        raise typer.BadParameter("--league-id requires --username")
+    try:
+        user, ids = sleeper.user_roster(league_id, username)
+    except FileNotFoundError:
+        raise typer.BadParameter(
+            f"No cached Sleeper snapshot for league {league_id}. "
+            f"Run `ffs fetch-sleeper-league --league-id {league_id}` first."
+        )
+    except ValueError as e:
+        raise typer.BadParameter(str(e))
+    players_map = sleeper.load_or_fetch_players()
+    names = sleeper.resolve_player_names(ids, players_map)
+    typer.echo(
+        f"[sleeper] Loaded {len(names)} players for {user.get('display_name')} "
+        f"from league {league_id}"
+    )
+    return names
+
+
 def _load_projection_inputs(season: int, ruleset: str):
     scored = career_mod.load_scored(ruleset=ruleset)
     schedule = ingest.load_schedules(season)
@@ -735,35 +770,7 @@ def lineup_cmd(
     ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
 ) -> None:
     """Compute the optimal starting lineup from a roster (text file OR Sleeper league)."""
-    if roster is None and league_id is None:
-        raise typer.BadParameter("Provide either --roster FILE or --league-id ID (with --username)")
-    if roster is not None and league_id is not None:
-        raise typer.BadParameter("--roster and --league-id are mutually exclusive")
-
-    if roster is not None:
-        if not roster.exists():
-            raise typer.BadParameter(f"Roster file not found: {roster}")
-        names = [line.strip() for line in roster.read_text().splitlines() if line.strip()]
-        if not names:
-            raise typer.BadParameter("Empty roster file")
-    else:
-        if username is None:
-            raise typer.BadParameter("--league-id requires --username")
-        try:
-            user, ids = sleeper.user_roster(league_id, username)
-        except FileNotFoundError:
-            raise typer.BadParameter(
-                f"No cached Sleeper snapshot for league {league_id}. "
-                f"Run `ffs fetch-sleeper-league --league-id {league_id}` first."
-            )
-        except ValueError as e:
-            raise typer.BadParameter(str(e))
-        players_map = sleeper.load_or_fetch_players()
-        names = sleeper.resolve_player_names(ids, players_map)
-        typer.echo(
-            f"[sleeper] Loaded {len(names)} players for {user.get('display_name')} "
-            f"from league {league_id}"
-        )
+    names = _resolve_roster_names(roster, league_id, username)
 
     scored, schedule, rosters_df, depth_charts_df, injuries_df = _load_projection_inputs(
         season, ruleset
@@ -809,6 +816,85 @@ def lineup_cmd(
         bench_cols = [c for c in bench_cols if c in bench.columns]
         typer.echo("\nBench:")
         typer.echo(bench[bench_cols].to_string(index=False))
+
+
+@app.command("platoon")
+def platoon_cmd(
+    season: Annotated[int, typer.Option("--season", "-s")],
+    slot: Annotated[str, typer.Option("--slot", help="RB | WR | TE | FLEX")],
+    roster: Annotated[
+        Path | None, typer.Option("--roster", help="File with one player name per line")
+    ] = None,
+    league_id: Annotated[
+        str | None, typer.Option("--league-id", help="Sleeper league ID (alternative to --roster)")
+    ] = None,
+    username: Annotated[
+        str | None, typer.Option("--username", help="Sleeper display name whose roster to load")
+    ] = None,
+    top: Annotated[int, typer.Option("--top")] = 20,
+    show_grid: Annotated[
+        bool, typer.Option("--show-grid", help="Print week-by-week grid for anchor + top candidate")
+    ] = False,
+    ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
+) -> None:
+    """Rank bench candidates by weekly-complementary value against your roster anchor."""
+    slot_u = slot.upper()
+    if slot_u == "FLEX":
+        pool_positions = platoon_mod.FLEX_POSITIONS
+    elif slot_u in platoon_mod.FLEX_POSITIONS:
+        pool_positions = (slot_u,)
+    else:
+        raise typer.BadParameter("--slot must be one of RB, WR, TE, FLEX")
+
+    names = _resolve_roster_names(roster, league_id, username)
+    scored, schedule, rosters_df, depth_charts_df, _ = _load_projection_inputs(season, ruleset)
+    weekly = projections.project_weekly(
+        scored,
+        schedule,
+        target_season=season,
+        rosters_df=rosters_df,
+        depth_charts_df=depth_charts_df,
+    )
+    if weekly.empty:
+        raise typer.BadParameter("No weekly projections available for this season")
+
+    players_df = weekly[["player_id", "player_display_name", "position", "team"]].drop_duplicates("player_id")
+    matched, unmatched = lineup.resolve_roster(players_df, names)
+    if unmatched:
+        typer.echo(f"[warn] Not matched: {'; '.join(unmatched)}")
+    if matched.empty:
+        raise typer.BadParameter("No roster players matched projections")
+
+    season_pts = weekly.groupby("player_id")["week_projection"].sum().rename("season_pts")
+    matched = matched.merge(season_pts, on="player_id", how="left")
+    slot_matched = matched[matched["position"].isin(pool_positions)]
+    if slot_matched.empty:
+        raise typer.BadParameter(f"No roster players at slot {slot_u}")
+    anchor = slot_matched.sort_values("season_pts", ascending=False).iloc[0]
+    anchor_pid = anchor["player_id"]
+
+    roster_ids = set(matched["player_id"])
+    pool = (
+        weekly[weekly["position"].isin(pool_positions) & ~weekly["player_id"].isin(roster_ids)]
+        [["player_id"]]
+        .drop_duplicates()
+    )
+    result = platoon_mod.platoon_value(weekly, anchor_pid, pool)
+
+    typer.echo(
+        f"Platoon candidates — {season} slot={slot_u}, anchor={anchor['player_display_name']} "
+        f"({anchor['position']}/{anchor['team']}, {anchor['season_pts']:.1f} pts projected)"
+    )
+    cols = ["player_display_name", "position", "team",
+            "platoon_points_added", "weeks_candidate_starts", "bye_covered"]
+    typer.echo(result[cols].head(top).to_string(index=False))
+
+    if show_grid and not result.empty:
+        top_pid = result.iloc[0]["player_id"]
+        top_name = result.iloc[0]["player_display_name"]
+        grid = platoon_mod.platoon_grid(weekly, anchor_pid, top_pid)
+        typer.echo(f"\nWeek-by-week grid — {anchor['player_display_name']} vs {top_name}")
+        typer.echo(grid.to_string(index=False))
 
 
 if __name__ == "__main__":

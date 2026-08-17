@@ -57,6 +57,12 @@ produces draft boards and weekly lineup recommendations. Designed for a
   rookies interpolated in from the ADP file when a `gsis_id` can't be joined.
 - `lineup` — greedy optimal starter selection from a roster of player
   names, given weekly projections.
+- `platoon` — for a chosen roster slot, ranks unrostered candidates by
+  the extra season points you'd gain by starting whichever of anchor /
+  candidate is projected higher each week. Bye-week coverage and the
+  count of weeks the candidate would outproject the anchor are surfaced
+  so you can identify true schedule complements (rather than just
+  second-best-at-position).
 
 ## Storage choices
 
@@ -141,7 +147,7 @@ Every command supports `--help` for full options.
 
 | Command | Purpose |
 |---|---|
-| `ffs defense --season Y --position P [--last-n N] [--sort easiest\|hardest]` | Ranks all 32 defenses by fantasy points allowed to a given position. |
+| `ffs defense --season Y --position P [--last-n N] [--sort easiest\|hardest]` | Ranks all 32 defenses by fantasy points allowed to a given position. Also surfaces `rushing_yds_allowed_pg` and `passing_yds_allowed_pg` so the raw yardage drivers behind the fantasy-points-allowed number are visible. |
 | `ffs sos --schedule-season Y --position P [--rankings-season Y2] [--start-week --end-week]` | Team-level strength of schedule vs position. `rankings-season` defaults to `schedule-season − 1`. |
 
 ### Projections and draft
@@ -149,9 +155,11 @@ Every command supports `--help` for full options.
 | Command | Purpose |
 |---|---|
 | `ffs project --season Y --week W [--position P] [--window 8] [--top 25]` | Per-week projections: baseline PPG × opponent adjustment. |
-| `ffs project-season --season Y [--position P] [--window 17] [--top 40]` | Full-season projections (sums weekly projections). |
-| `ffs draft --season Y [--teams 12] [--top 100] [--position P] [--after-pick N] [--sleepers \| --reaches] [--exclude-out] [--roster-slots ...] [--ruleset standard\|half_ppr\|ppr]` | VBD-ranked draft board across all positions, enriched with ADP if `adp.parquet` is present. Includes a `tier` column (per-position VBD-gap clusters). `--after-pick`, `--sleepers`, `--reaches` require ADP. `--exclude-out` drops currently-Out players. `--roster-slots QB=1,RB=2,WR=2,TE=1,FLEX=1,K=1,DST=1` overrides starters. `--ruleset` picks scoring rules. |
+| `ffs project-season --season Y [--position P] [--window 17] [--top 40]` | Full-season projections (sums weekly projections). Includes a `bye_week` column. |
+| `ffs schedule-player --season Y --player NAME` | Week-by-week matchup grid for one player: opponent, opp_factor, game_env_factor, week_projection. |
+| `ffs draft --season Y [--teams 12] [--top 100] [--position P] [--after-pick N] [--sleepers \| --reaches] [--exclude-out] [--roster-slots ...] [--ruleset standard\|half_ppr\|ppr]` | VBD-ranked draft board across all positions, enriched with ADP if `adp.parquet` is present. Includes a `tier` column (per-position VBD-gap clusters) and a `bye_week` column. `--after-pick`, `--sleepers`, `--reaches` require ADP. `--exclude-out` drops currently-Out players. `--roster-slots QB=1,RB=2,WR=2,TE=1,FLEX=1,K=1,DST=1` overrides starters. `--ruleset` picks scoring rules. |
 | `ffs lineup --season Y --week W (--roster ROSTER.txt \| --league-id ID --username NAME) [--window 8] [--roster-slots ...] [--ruleset ...]` | Optimal starting lineup. Roster comes from a text file OR a cached Sleeper league snapshot. `--roster-slots` overrides starting slot mix. |
+| `ffs platoon --season Y --slot {RB\|WR\|TE\|FLEX} (--roster ROSTER.txt \| --league-id ID --username NAME) [--top 20] [--show-grid] [--ruleset ...]` | Rank unrostered players by the season points they add as a week-to-week platoon partner for your best roster player at `--slot`. `--show-grid` prints the week-by-week matchup grid for the anchor + top candidate. |
 
 ## Typical workflows
 
@@ -193,6 +201,33 @@ uv run ffs fetch-depth-charts --season 2026 --force
 # Weekly start/sit for your roster
 uv run ffs lineup --season 2026 --week 5 --roster my_roster.txt
 ```
+
+### Platoon / streaming (draft & bench planning)
+
+Complementary players you can rotate week-to-week. If your RB1's
+schedule is soft weeks 1/3/5 and tough weeks 2/4, `ffs platoon` finds
+bench candidates whose schedule is the opposite — so the *max* of
+anchor and candidate each week adds real season points on top of the
+anchor's own total.
+
+```bash
+# See how your top RB's season plays out week by week
+uv run ffs schedule-player --season 2026 --player "Bijan Robinson"
+
+# Best RB platoon partner for the top RB on my roster (draft or bench-picking)
+uv run ffs platoon --season 2026 --roster my_roster.txt --slot RB --top 20
+
+# Same but with a Sleeper league instead of a text file, plus the head-to-head grid
+uv run ffs platoon --season 2026 --league-id 123 --username tal --slot FLEX --show-grid
+```
+
+`platoon_points_added` is the total season points you'd gain by
+starting whichever of anchor / candidate projects higher each week
+(the anchor by itself is the baseline). `bye_covered = True` means the
+candidate plays on your anchor's bye. `weeks_candidate_starts` is how
+often the candidate beats the anchor — a candidate with only 2 starts
+but +30 points is a bye-week + tough-matchup specialist, whereas one
+with 8+ starts is more of a true co-#1.
 
 ### Ad-hoc analysis
 
@@ -237,6 +272,7 @@ ffs/
   projections.py  # player_baseline, project_week, project_season
   draft.py        # replacement_ranks, draft_rankings, with_adp
   lineup.py       # resolve_roster, optimize_lineup
+  platoon.py      # platoon_value, platoon_grid
   cli.py          # typer app (all commands live here)
 ```
 
