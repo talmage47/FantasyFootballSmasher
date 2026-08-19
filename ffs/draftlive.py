@@ -226,6 +226,9 @@ def explain_candidate(
     injury = row.get("injury_status")
     if injury in ("Out", "Doubtful", "Questionable"):
         parts.append(str(injury))
+    if bool(row.get("injury_prone")):
+        pct = float(row.get("games_missed_pct") or 0)
+        parts.append(f"injury-prone (missed {pct * 100:.0f}%)")
     if not parts:
         parts.append("best available at this VBD")
     return "; ".join(parts)

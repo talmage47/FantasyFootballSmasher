@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ffs import career as career_mod
 from ffs import (
-    config, draft, draftlive, dst, ingest, injuries as injuries_mod,
+    config, draft, draftlive, dst, durability, ingest, injuries as injuries_mod,
     lineup, matchups, platoon as platoon_mod, projections, scoring, sleeper, sos,
 )
 
@@ -727,6 +727,9 @@ def draft_cmd(
         team_bye = projections.team_bye_weeks(schedule, season).set_index("team")["bye_week"]
         board.loc[missing_bye, "bye_week"] = board.loc[missing_bye, "team"].map(team_bye)
 
+    dur = durability.player_durability(up_to_season=season - 1, scored_df=scored)
+    board = durability.attach_durability(board, dur)
+
     if exclude_out:
         if "injury_status" in board.columns:
             board = board[board["injury_status"] != "Out"]
@@ -753,11 +756,12 @@ def draft_cmd(
     if has_adp:
         cols = ["overall_rank", "player_display_name", "position", "team", "pos_rank",
                 "tier", "bye_week", "floor", "projected_points", "ceiling", "vbd",
-                "adp", "adp_delta", "ffc_adp", "ffc_delta", "is_rookie", "injury_status"]
+                "adp", "adp_delta", "ffc_adp", "ffc_delta", "is_rookie",
+                "games_missed_pct", "injury_prone", "injury_status"]
     else:
         cols = ["overall_rank", "player_display_name", "position", "team", "pos_rank",
                 "tier", "bye_week", "floor", "projected_points", "ceiling", "vbd",
-                "replacement_pts", "injury_status"]
+                "replacement_pts", "games_missed_pct", "injury_prone", "injury_status"]
     cols = [c for c in cols if c in board.columns]
 
     slot_pretty = _format_slots(starters, flex_counts)
@@ -985,6 +989,8 @@ def _build_draft_board(
     if missing_bye.any():
         team_bye = projections.team_bye_weeks(schedule, season).set_index("team")["bye_week"]
         board.loc[missing_bye, "bye_week"] = board.loc[missing_bye, "team"].map(team_bye)
+    dur = durability.player_durability(up_to_season=season - 1, scored_df=scored)
+    board = durability.attach_durability(board, dur)
     return board
 
 
@@ -1100,13 +1106,18 @@ def _render_draft_live(
         t.add_column("pos", style="bold")
         t.add_column("player"); t.add_column("team"); t.add_column("bye")
         t.add_column("vbd", justify="right"); t.add_column("tier", justify="right")
-        t.add_column("wait", justify="right")
+        t.add_column("wait", justify="right"); t.add_column("miss%", justify="right")
         for _, r in top_pos.iterrows():
             bye = str(int(r["bye_week"])) if pd.notna(r.get("bye_week")) else "?"
             tier = str(int(r["tier"])) if pd.notna(r.get("tier")) else "?"
+            miss = (
+                f"[red]{r['games_missed_pct']*100:.0f}%[/red]"
+                if bool(r.get("injury_prone"))
+                else (f"{r['games_missed_pct']*100:.0f}%" if pd.notna(r.get("games_missed_pct")) else "—")
+            )
             t.add_row(
                 r["position"], r["player_display_name"], str(r.get("team") or ""),
-                bye, f"{r.get('vbd', 0):.0f}", tier, f"{r.get('wait_cost', 0):.0f}"
+                bye, f"{r.get('vbd', 0):.0f}", tier, f"{r.get('wait_cost', 0):.0f}", miss,
             )
         return Panel(t, title="Best available by position", border_style="magenta")
 
@@ -1115,17 +1126,22 @@ def _render_draft_live(
         t.add_column("#", style="bold")
         t.add_column("player"); t.add_column("pos"); t.add_column("team"); t.add_column("bye")
         t.add_column("vbd", justify="right"); t.add_column("wait", justify="right")
-        t.add_column("fit", justify="right")
+        t.add_column("fit", justify="right"); t.add_column("miss%", justify="right")
         t.add_column("why")
         for i, (_, r) in enumerate(top5.iterrows(), 1):
             bye = str(int(r["bye_week"])) if pd.notna(r.get("bye_week")) else "?"
             why = draftlive.explain_candidate(
                 r, starters, my_positions, anchors_bye, next_pick
             )
+            miss = (
+                f"[red]{r['games_missed_pct']*100:.0f}%[/red]"
+                if bool(r.get("injury_prone"))
+                else (f"{r['games_missed_pct']*100:.0f}%" if pd.notna(r.get("games_missed_pct")) else "—")
+            )
             t.add_row(
                 str(i), r["player_display_name"], r["position"], str(r.get("team") or ""),
                 bye, f"{r.get('vbd', 0):.0f}", f"{r.get('wait_cost', 0):.0f}",
-                f"{r.get('fit_score', 0):.0f}", why,
+                f"{r.get('fit_score', 0):.0f}", miss, why,
             )
         title = f"Top {top_n} for you"
         if lock_out:

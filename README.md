@@ -80,6 +80,13 @@ produces draft boards and weekly lineup recommendations. Designed for a
   need + urgency from ADP-implied wait cost). Auto-imports league
   roster config (SUPER_FLEX / extra FLEX) from the cached Sleeper
   league snapshot.
+- `durability` — historical injury frequency per player, computed from
+  cached weekly injury reports (Out designations) combined with a
+  scored-games gap fallback for long-term IR cases. Surfaced as a
+  `games_missed_pct` column and an `injury_prone` flag on the draft
+  board and `draft-live` dashboard; **does not** modify projections or
+  rankings — market ADP has already partly priced this in, and risk
+  tolerance is a personal choice.
 
 ## Storage choices
 
@@ -176,7 +183,7 @@ Every command supports `--help` for full options.
 | `ffs project --season Y --week W [--position P] [--window 8] [--top 25]` | Per-week projections: baseline PPG × opponent adjustment. |
 | `ffs project-season --season Y [--position P] [--window 17] [--top 40]` | Full-season projections (sums weekly projections). Includes a `bye_week` column. |
 | `ffs schedule-player --season Y --player NAME` | Week-by-week matchup grid for one player: opponent, opp_factor, game_env_factor, week_projection. |
-| `ffs draft --season Y [--teams 12] [--top 100] [--position P] [--after-pick N] [--sleepers \| --reaches] [--exclude-out] [--roster-slots ...] [--league-id ID] [--ruleset standard\|half_ppr\|ppr]` | VBD-ranked draft board across all positions, enriched with FantasyPros + FFC ADP when present. Includes a `tier` column (per-position VBD-gap clusters) and a `bye_week` column. `--after-pick`, `--sleepers`, `--reaches` require ADP. `--exclude-out` drops currently-Out players. `--roster-slots QB=1,RB=2,WR=2,TE=1,FLEX=2,SUPER_FLEX=1,K=1,DST=1` overrides starters (SUPER_FLEX, WRRB_FLEX, REC_FLEX all supported). `--league-id ID` auto-imports the starter/flex spec from a cached Sleeper league (see `fetch-sleeper-league`) — no need to type `--roster-slots` for your own league. |
+| `ffs draft --season Y [--teams 12] [--top 100] [--position P] [--after-pick N] [--sleepers \| --reaches] [--exclude-out] [--roster-slots ...] [--league-id ID] [--ruleset standard\|half_ppr\|ppr]` | VBD-ranked draft board across all positions, enriched with FantasyPros + FFC ADP when present. Includes `tier` (per-position VBD-gap clusters), `bye_week`, and durability columns (`games_missed_pct`, `injury_prone` flag when ≥20% games missed in recent seasons). `--after-pick`, `--sleepers`, `--reaches` require ADP. `--exclude-out` drops currently-Out players. `--roster-slots QB=1,RB=2,WR=2,TE=1,FLEX=2,SUPER_FLEX=1,K=1,DST=1` overrides starters (SUPER_FLEX, WRRB_FLEX, REC_FLEX all supported). `--league-id ID` auto-imports the starter/flex spec from a cached Sleeper league (see `fetch-sleeper-league`) — no need to type `--roster-slots` for your own league. |
 | `ffs lineup --season Y --week W (--roster ROSTER.txt \| --league-id ID --username NAME) [--window 8] [--roster-slots ...] [--ruleset ...]` | Optimal starting lineup. Roster comes from a text file OR a cached Sleeper league snapshot. When `--league-id` is used, starter spec (SUPER_FLEX etc.) auto-imports from the league unless `--roster-slots` overrides. |
 | `ffs platoon --season Y --slot {RB\|WR\|TE\|FLEX} (--roster ROSTER.txt \| --league-id ID --username NAME) [--top 20] [--show-grid] [--ruleset ...]` | Rank unrostered players by the season points they add as a week-to-week platoon partner for your best roster player at `--slot`. `--show-grid` prints the week-by-week matchup grid for the anchor + top candidate. |
 | `ffs draft-live --league-id ID --username NAME [--season 2026] [--draft-id ID] [--favorite-team SF] [--poll 3] [--top 5] [--slot N]` | Live-updating draft assistant. Polls Sleeper's draft-picks endpoint every N seconds and renders a `rich` dashboard: draft state, your team, best available by position, top-N candidates scored against your current roster (VBD × need-multiplier + urgency from `wait_cost`), and an optional `--favorite-team` watch panel. Auto-detects your league's roster spec (including SUPER_FLEX) and your draft slot. K/DST are locked out of the top-N until round 8. |
@@ -245,7 +252,12 @@ by position, and top-N for you (sorted by `fit_score = vbd ×
 need_multiplier + urgency`). The last column of the top-N table is a
 short template explanation like "tier cliff (−28 VBD if you wait);
 fills WR starter need; W7 bye stacks 2 starters". K and DST are hidden
-from the top-N until round 8 so they don't clutter middle rounds.
+from the top-N until round 8 so they don't clutter middle rounds. A
+`miss%` column shows historical durability from `ffs/durability.py`
+(computed from injury reports over recent seasons) — players at or
+above 20% missed games are colored red and get an "injury-prone"
+phrase appended to their explanation. Durability is informational
+only; it does not shift fit_score or move players on the board.
 
 Roster spec (starters, extra FLEX, SUPER_FLEX, etc.) is imported
 automatically from Sleeper. If your draft slot hasn't been assigned in
@@ -325,6 +337,7 @@ ffs/
   lineup.py       # resolve_roster, optimize_lineup
   platoon.py      # platoon_value, platoon_grid
   draftlive.py    # snake picks, positional_need, wait_cost, score_candidates
+  durability.py   # player_durability — historical injury-prone signal
   sleeper.py      # Sleeper API client + league/draft snapshot loaders
   cli.py          # typer app (all commands live here)
 ```
