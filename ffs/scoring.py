@@ -16,7 +16,7 @@ STANDARD = ScoringRules(
     weights={
         "passing_yards": 0.04,
         "passing_tds": 4.0,
-        "interceptions": -2.0,
+        "passing_interceptions": -2.0,
         "passing_2pt_conversions": 2.0,
         "rushing_yards": 0.1,
         "rushing_tds": 6.0,
@@ -27,6 +27,7 @@ STANDARD = ScoringRules(
         "sack_fumbles_lost": -2.0,
         "rushing_fumbles_lost": -2.0,
         "receiving_fumbles_lost": -2.0,
+        "fumble_recovery_tds": 6.0,
         "special_teams_tds": 6.0,
         # Kicker (ESPN standard: 3pt <40yd, 4pt 40-49, 5pt 50+; 1 PAT; -1 missed).
         "fg_made_0_19": 3.0,
