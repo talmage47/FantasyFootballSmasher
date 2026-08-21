@@ -37,11 +37,58 @@ STANDARD_POINTS_ALLOWED_BUCKETS: list[tuple[int, float, float]] = [
 ]
 
 
-def _points_allowed_bonus(points_allowed: float) -> float:
-    for upper, bonus in STANDARD_POINTS_ALLOWED_BUCKETS:
+def _points_allowed_bonus(
+    points_allowed: float,
+    buckets: list[tuple[int, float]] = STANDARD_POINTS_ALLOWED_BUCKETS,
+) -> float:
+    for upper, bonus in buckets:
         if points_allowed <= upper:
             return bonus
     return 0.0
+
+
+# Sleeper defensive scoring_settings key → per-team-stats column.
+_SLEEPER_DST_KEYS: dict[str, str] = {
+    "sack": "def_sacks",
+    "int": "def_interceptions",
+    "fum_rec": "fumble_recovery_opp",
+    "def_td": "def_tds",
+    "safe": "def_safeties",
+    "ff": "def_fumbles_forced",
+}
+
+# (upper points-allowed bound inclusive, Sleeper key)
+_SLEEPER_PA_BRACKETS: list[tuple[int, str]] = [
+    (0, "pts_allow_0"),
+    (6, "pts_allow_1_6"),
+    (13, "pts_allow_7_13"),
+    (20, "pts_allow_14_20"),
+    (27, "pts_allow_21_27"),
+    (34, "pts_allow_28_34"),
+    (10_000, "pts_allow_35p"),
+]
+
+
+def parse_sleeper_dst(
+    settings: dict,
+) -> tuple[dict[str, float], list[tuple[int, float]]]:
+    """Translate Sleeper's scoring_settings into (weights, points_allowed_buckets)."""
+    weights: dict[str, float] = {}
+    for sk, nc in _SLEEPER_DST_KEYS.items():
+        v = settings.get(sk)
+        if v:
+            weights[nc] = float(v)
+    blk = settings.get("blk_kick")
+    if blk:
+        weights["fg_blocked"] = float(blk)
+        weights["pt_blocked"] = float(blk)
+    st_td = settings.get("def_st_td") or settings.get("st_td")
+    if st_td:
+        weights["special_teams_tds"] = float(st_td)
+    buckets: list[tuple[int, float]] = [
+        (upper, float(settings.get(sk) or 0.0)) for upper, sk in _SLEEPER_PA_BRACKETS
+    ]
+    return weights, buckets
 
 
 def _points_allowed_from_schedule(schedule: pd.DataFrame) -> pd.DataFrame:
@@ -59,6 +106,7 @@ def score_dst(
     team_stats: pd.DataFrame,
     schedule: pd.DataFrame,
     weights: dict[str, float] = STANDARD_DST_WEIGHTS,
+    points_allowed_buckets: list[tuple[int, float]] = STANDARD_POINTS_ALLOWED_BUCKETS,
 ) -> pd.DataFrame:
     """Compute per-team-per-week DST fantasy points.
 
@@ -76,7 +124,9 @@ def score_dst(
     pa = _points_allowed_from_schedule(schedule)
     merged = ts.merge(pa, on=["season", "week", "team"], how="left")
     merged["points_allowed"] = merged["points_allowed"].fillna(0)
-    bonus = merged["points_allowed"].map(_points_allowed_bonus)
+    bonus = merged["points_allowed"].map(
+        lambda x: _points_allowed_bonus(x, points_allowed_buckets)
+    )
     merged["fantasy_points_ffs"] = base.values + bonus.values
 
     merged["position"] = "DST"

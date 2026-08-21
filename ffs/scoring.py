@@ -71,3 +71,62 @@ def score_weekly(df: pd.DataFrame, rules: ScoringRules) -> pd.DataFrame:
     out = df.copy()
     out["fantasy_points_ffs"] = compute_fantasy_points(df, rules)
     return out
+
+
+# Sleeper's scoring_settings key → nflreadpy weekly stats column.
+# Only 1:1 mappings live here; fumbles-lost and blocked-kicks apply to
+# multiple underlying columns and are handled specially in parse_sleeper_scoring.
+_SLEEPER_PLAYER_KEYS: dict[str, str] = {
+    "pass_yd": "passing_yards",
+    "pass_td": "passing_tds",
+    "pass_int": "passing_interceptions",
+    "pass_2pt": "passing_2pt_conversions",
+    "rush_yd": "rushing_yards",
+    "rush_td": "rushing_tds",
+    "rush_2pt": "rushing_2pt_conversions",
+    "rec": "receptions",
+    "rec_yd": "receiving_yards",
+    "rec_td": "receiving_tds",
+    "rec_2pt": "receiving_2pt_conversions",
+    "fum_rec_td": "fumble_recovery_tds",
+    "fgm_0_19": "fg_made_0_19",
+    "fgm_20_29": "fg_made_20_29",
+    "fgm_30_39": "fg_made_30_39",
+    "fgm_40_49": "fg_made_40_49",
+    "fgm_50_59": "fg_made_50_59",
+    "fgm_60p": "fg_made_60_",
+    "fgmiss": "fg_missed",
+    "xpm": "pat_made",
+    "xpmiss": "pat_missed",
+    "st_td": "special_teams_tds",
+}
+
+_FUMBLE_LOST_COLS: tuple[str, ...] = (
+    "sack_fumbles_lost",
+    "rushing_fumbles_lost",
+    "receiving_fumbles_lost",
+)
+
+
+def sleeper_ruleset_name(league_id: str) -> str:
+    return f"sleeper_{league_id}"
+
+
+def parse_sleeper_scoring(settings: dict, league_id: str) -> ScoringRules:
+    """Translate a Sleeper league's scoring_settings dict into a ScoringRules.
+
+    Zero-valued keys are omitted so we don't churn through a hundred no-op
+    multiplications per row. `fum_lost` is broadcast to every nflreadpy
+    *_fumbles_lost column because Sleeper applies it once per lost fumble
+    regardless of source.
+    """
+    weights: dict[str, float] = {}
+    for sleeper_key, nfl_col in _SLEEPER_PLAYER_KEYS.items():
+        v = settings.get(sleeper_key)
+        if v:
+            weights[nfl_col] = float(v)
+    fum_lost = settings.get("fum_lost")
+    if fum_lost:
+        for col in _FUMBLE_LOST_COLS:
+            weights[col] = float(fum_lost)
+    return ScoringRules(name=sleeper_ruleset_name(league_id), weights=weights)

@@ -163,7 +163,7 @@ Every command supports `--help` for full options.
 
 | Command | Purpose |
 |---|---|
-| `ffs score [--season Y \| --start Y --end Y] [--ruleset standard] [--force]` | Compute fantasy points and write `processed/` Parquet. Defaults to all seasons. |
+| `ffs score [--season Y \| --start Y --end Y] [--ruleset standard\|half_ppr\|ppr \| --league-id ID] [--force]` | Compute fantasy points and write `processed/` Parquet. `--league-id` reads `scoring_settings` off a cached Sleeper league snapshot and scores under a per-league ruleset (`sleeper_<id>`) — captures TE-premium, custom INT penalties, per-tier FG points, DST points-allowed brackets, etc. Defaults to all seasons. |
 | `ffs leaders --season Y [--position P] [--top N]` | Top scorers for a single season. |
 | `ffs career [--position P] [--min-games 16] [--sort ppg\|total\|best_week] [--top N]` | Career per-player aggregates across all scored seasons. |
 | `ffs rolling --player NAME [--window 8]` | Rolling N-game PPG across a player's whole career (spans seasons). |
@@ -371,11 +371,13 @@ scoring format is a new dict, not a new class hierarchy.
 - **Sleeper integration is read-only** — writes (setting your lineup,
   making picks, sending messages) are not supported. `ffs
   fetch-sleeper-league` caches league settings, rosters, users, and
-  the player map. `draft`, `lineup`, and `draft-live` all accept
-  `--league-id` and auto-import your league's starter/flex spec
-  (including SUPER_FLEX, WRRB_FLEX, and REC_FLEX). League scoring
-  rules (custom PPR fractions, TE-premium, etc.) are NOT yet imported
-  — `--ruleset` still picks between standard/half_ppr/ppr manually.
+  the player map. `draft`, `lineup`, `platoon`, and `draft-live` all
+  accept `--league-id` and auto-import both your league's starter/flex
+  spec (including SUPER_FLEX, WRRB_FLEX, REC_FLEX) and its scoring
+  rules. To use league scoring, first run `ffs score --league-id ID`
+  once — that scores all cached seasons under a per-league ruleset
+  (`sleeper_<id>`), and downstream commands then pick it up
+  automatically when `--league-id` is passed.
 - **Some model outliers to investigate** before treating the draft
   board as gospel — see the `adp_delta` column and the notes in the
   project memory.

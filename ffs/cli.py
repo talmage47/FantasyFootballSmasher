@@ -41,6 +41,26 @@ def _parse_roster_slots(
     return starters, flex_counts
 
 
+def _resolve_ruleset(ruleset_arg: str | None, league_id: str | None) -> str:
+    """Prefer a Sleeper-imported ruleset when --league-id is set and scored.
+
+    Priority: explicit --ruleset > sleeper_<id> if any historical season is
+    scored under it > 'standard' fallback.
+    """
+    if ruleset_arg is not None:
+        return ruleset_arg
+    if league_id is not None:
+        name = scoring.sleeper_ruleset_name(league_id)
+        if any(config.weekly_scored_path(s, name).exists() for s in config.DEFAULT_SEASONS):
+            return name
+        typer.echo(
+            f"[sleeper] no scored data for ruleset {name!r}; "
+            f"run `ffs score --league-id {league_id}` to import league scoring. "
+            f"Falling back to 'standard'."
+        )
+    return "standard"
+
+
 def _load_league_slot_config(
     league_id: str,
 ) -> tuple[dict[str, int], dict[str, int]] | None:
@@ -292,12 +312,31 @@ def score(
     start: Annotated[int | None, typer.Option("--start")] = None,
     end: Annotated[int | None, typer.Option("--end")] = None,
     ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
+    league_id: Annotated[
+        str | None,
+        typer.Option("--league-id", help="Score using a Sleeper league's scoring_settings (auto-imports rules)"),
+    ] = None,
     force: Annotated[bool, typer.Option("--force")] = False,
 ) -> None:
     """Compute fantasy points for the given seasons using the given ruleset."""
-    if ruleset not in scoring.RULESETS:
+    dst_weights = dst.STANDARD_DST_WEIGHTS
+    dst_buckets = dst.STANDARD_POINTS_ALLOWED_BUCKETS
+    if league_id is not None:
+        try:
+            league, _r, _u = sleeper.load_league_snapshot(league_id)
+        except FileNotFoundError:
+            raise typer.BadParameter(
+                f"No cached Sleeper snapshot for league {league_id}. "
+                f"Run `ffs fetch-sleeper-league --league-id {league_id}` first."
+            )
+        settings = league.get("scoring_settings") or {}
+        rules = scoring.parse_sleeper_scoring(settings, league_id)
+        dst_weights, dst_buckets = dst.parse_sleeper_dst(settings)
+        typer.echo(f"[sleeper] Scoring with league {league_id} settings → ruleset {rules.name!r}")
+    elif ruleset in scoring.RULESETS:
+        rules = scoring.RULESETS[ruleset]
+    else:
         raise typer.BadParameter(f"unknown ruleset {ruleset!r}; known: {list(scoring.RULESETS)}")
-    rules = scoring.RULESETS[ruleset]
     for season in _resolve_seasons(seasons, start, end):
         raw_path = config.weekly_raw_path(season)
         if not raw_path.exists():
@@ -324,7 +363,9 @@ def score(
             continue
         team_stats = ingest.load_team_stats(season)
         schedule = ingest.load_schedules(season)
-        dst_scored = dst.score_dst(team_stats, schedule)
+        dst_scored = dst.score_dst(
+            team_stats, schedule, weights=dst_weights, points_allowed_buckets=dst_buckets
+        )
         config.ensure_parent(dst_out)
         dst_scored.to_parquet(dst_out, index=False)
         typer.echo(f"  Scored {len(dst_scored):,} DST rows → {dst_out}")
@@ -669,11 +710,15 @@ def draft_cmd(
         str | None,
         typer.Option("--league-id", help="Import starters/flex config from a cached Sleeper league"),
     ] = None,
-    ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
+    ruleset: Annotated[
+        str | None,
+        typer.Option("--ruleset", "-r", help="Override auto-detected ruleset"),
+    ] = None,
 ) -> None:
     """VBD-ranked draft board for the given season and league size."""
     if sleepers and reaches:
         raise typer.BadParameter("--sleepers and --reaches are mutually exclusive")
+    ruleset = _resolve_ruleset(ruleset, league_id)
 
     override = _parse_roster_slots(roster_slots)
     league_slots = _load_league_slot_config(league_id) if league_id else None
@@ -806,10 +851,14 @@ def lineup_cmd(
             help="Override starting slots, e.g. QB=1,RB=2,WR=2,TE=1,FLEX=1,K=1,DST=1",
         ),
     ] = None,
-    ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
+    ruleset: Annotated[
+        str | None,
+        typer.Option("--ruleset", "-r", help="Override auto-detected ruleset"),
+    ] = None,
 ) -> None:
     """Compute the optimal starting lineup from a roster (text file OR Sleeper league)."""
     names = _resolve_roster_names(roster, league_id, username)
+    ruleset = _resolve_ruleset(ruleset, league_id)
 
     scored, schedule, rosters_df, depth_charts_df, injuries_df = _load_projection_inputs(
         season, ruleset
@@ -890,7 +939,10 @@ def platoon_cmd(
     show_grid: Annotated[
         bool, typer.Option("--show-grid", help="Print week-by-week grid for anchor + top candidate")
     ] = False,
-    ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
+    ruleset: Annotated[
+        str | None,
+        typer.Option("--ruleset", "-r", help="Override auto-detected ruleset"),
+    ] = None,
 ) -> None:
     """Rank bench candidates by weekly-complementary value against your roster anchor."""
     slot_u = slot.upper()
@@ -902,6 +954,7 @@ def platoon_cmd(
         raise typer.BadParameter("--slot must be one of RB, WR, TE, FLEX")
 
     names = _resolve_roster_names(roster, league_id, username)
+    ruleset = _resolve_ruleset(ruleset, league_id)
     scored, schedule, rosters_df, depth_charts_df, _ = _load_projection_inputs(season, ruleset)
     weekly = projections.project_weekly(
         scored,
@@ -1199,7 +1252,10 @@ def draft_live_cmd(
         int | None,
         typer.Option("--slot", help="Manually set your draft slot if Sleeper hasn't assigned it yet"),
     ] = None,
-    ruleset: Annotated[str, typer.Option("--ruleset", "-r")] = "standard",
+    ruleset: Annotated[
+        str | None,
+        typer.Option("--ruleset", "-r", help="Override auto-detected ruleset"),
+    ] = None,
 ) -> None:
     """Live-updating draft assistant: polls Sleeper and shows scored candidates in real time."""
     import threading
@@ -1209,6 +1265,7 @@ def draft_live_cmd(
     from rich.live import Live
 
     console = Console()
+    ruleset = _resolve_ruleset(ruleset, league_id)
 
     try:
         if draft_id is None:
